@@ -1,0 +1,528 @@
+#!/usr/bin/python
+
+from PyQt4 import QtCore, QtGui
+
+import subprocess, os, select
+import numpy as np
+import itertools
+import struct
+
+from StreamDialog import StreamDialog
+
+from vispy import gloo, app, scene, visuals
+from vispy.visuals import transforms
+from vispy.visuals.collections import SegmentCollection
+
+nrows = 8
+ncols = 4
+num_signals = nrows*ncols
+
+MICROVOLTS_PER_COUNT = 0.195
+
+def calculateTicks(axisrange):
+    delta = axisrange[1] - axisrange[0]
+    # delta must be greater than 1 but less than 100000; check for this somewhere
+    increments = [10**i for i in range(4,-1,-1)]
+    i = 0
+    increment = None
+    while not increment:
+        inc = increments[i]
+        if delta > 3*inc:
+            increment = inc
+        i += 1
+    multiple = axisrange[0]//increment
+    tick0 = (multiple+1)*increment
+    ticks = range(tick0, axisrange[1], increment)
+    return ticks
+
+class StreamWindow(QtGui.QWidget):
+
+    def __init__(self, params):
+        super(StreamWindow, self).__init__(None)
+
+        self.chip = params['chip']
+        ymin = params['ymin']
+        ymax = params['ymax']
+        self.yrange_uV = [ymin, ymax]
+        self.deltay_uv = ymax - ymin
+        self.yrange_cnts = [int(y*5+2**15) for y in self.yrange_uV]
+        self.refreshRate = params['refreshRate']
+
+        try:
+            hwif.setSubsamples_byChip(self.chip)
+        except hwif.hwifError as e:
+            print e.message
+            pass
+
+        ###############################
+        # stream buffers, timers, etc.
+        ###############################
+
+        sr = 30000  # sample rate
+        frame_rate = self.refreshRate
+        self.frame_period = 1000//frame_rate     # frame period, in ms
+        self.xrangems = params['xrange']
+        self.nsamps = 30*params['xrange']   # number of samples to display
+        self.nrefresh = sr//frame_rate   # new samples collected before refresh
+        self.xvalues = np.arange(self.nsamps, dtype='int')
+        self.plotBuff = np.zeros((32, self.nsamps), dtype='float')
+        self.newBuff = np.zeros((32, self.nrefresh), dtype='float')
+        self.draw_point = 0.0
+
+        self.timer = QtCore.QTimer()
+        self.timer.timeout.connect(self.updatePlot)
+
+        self.proto2bytes_filename = os.path.join(config.daemonDir, 'build/proto2bytes')
+
+        #########################
+        # vispy plotting stuff
+        #########################
+
+        self.canvas = ChipCanvas(self.nsamps, self.nrefresh, ymin, ymax, parent=self)
+
+        ###################
+        # Top-level stuff
+        ##################
+
+        self.startButton = QtGui.QPushButton()
+        self.startButton.setIcon(QtGui.QIcon('../img/play.png'))
+        self.startButton.setIconSize(QtCore.QSize(25,25))
+        self.startButton.clicked.connect(self.startStreaming)
+
+        self.stopButton = QtGui.QPushButton()
+        self.stopButton.setIcon(QtGui.QIcon('../img/pause.png'))
+        self.stopButton.setIconSize(QtCore.QSize(25,25))
+        self.stopButton.clicked.connect(self.stopStreaming)
+
+        self.buttonPanel = QtGui.QWidget()
+        tmp = QtGui.QHBoxLayout()
+        tmp.addWidget(self.startButton)
+        tmp.addWidget(self.stopButton)
+        self.buttonPanel.setLayout(tmp)
+        self.buttonPanel.setMaximumHeight(50)
+
+        self.layout = QtGui.QVBoxLayout()
+        self.layout.addWidget(self.buttonPanel)
+        self.infoLabel = QtGui.QLabel()
+        self.setInfoLabel(params['xrange'], self.deltay_uv)
+        self.infoLabel.setMaximumHeight(60)
+        self.layout.addWidget(self.infoLabel)
+        self.layout.addWidget(self.canvas.native)
+
+        self.setLayout(self.layout)
+
+        self.setWindowTitle('Willow Live Streaming')
+        self.setWindowIcon(QtGui.QIcon('../img/round_logo_60x60.png'))
+
+    def startStreaming(self):
+        try:
+            hwif.startStreaming_subsamples()
+            self.toggleStdin(True)
+            print 'Started streaming.'
+            pass
+        except hwif.AlreadyError:
+            #self.toggleStdin(True) # ideally this would start the plot updating, but for now it fails
+            print 'Hardware was already streaming. Try stopping and restarting stream.'
+            pass
+        except hwif.hwifError as e:
+            print e.message
+            pass
+
+    def stopStreaming(self):
+        try:
+            hwif.stopStreaming()
+            print 'Stopped streaming.'
+            pass
+        except hwif.AlreadyError:
+            self.toggleStdin(False)
+            print 'Already not streaming'
+            pass
+        except AttributeError:
+            # TODO what's up with this?
+            print 'AttributeError: Pipe object does not exist'
+            pass
+        except hwif.hwifError as e:
+            print e.message
+            pass
+        finally:
+            self.toggleStdin(False)
+
+    def toggleStdin(self, enable):
+        if enable:
+            self.proto2bytes_po = subprocess.Popen([self.proto2bytes_filename,
+                '-A'], stdout=subprocess.PIPE,
+                # comment this out to view stderr in terminal (kinda useful for debugging)
+                stderr=subprocess.PIPE
+                )
+            self.proto2bytes_poller = select.poll()
+            self.proto2bytes_poller.register(self.proto2bytes_po.stdout, select.POLLIN)
+            self.timer.start(self.frame_period)
+        else:
+            self.timer.stop()
+            try:
+                self.proto2bytes_po.kill()
+            except AttributeError:
+                pass
+
+    def setInfoLabel(self, xr, yr):
+        self.infoLabel.setText('Chip %d: xrange = %3.2f ms, yrange = %3.2f uV\n'
+                                '(mousewheel zooms horizontally, ctrl+mousewheel zooms vertically)'
+                                        % (self.chip, xr, yr))
+
+    def updatePlot(self):
+        # 32 channels of 2-byte data, gathered over self.nrefresh samples
+        size_data = 2*32*self.nrefresh
+        new_data_string = self.proto2bytes_po.stdout.read(size_data)
+        try:
+            # assumes daemon running on a little-endian system
+            # (true of x86, amd64, but not of some other processors)
+            new_data = struct.unpack('<'+'H'*32*self.nrefresh, new_data_string)
+            for i in xrange(self.nrefresh):
+                self.newBuff[:,i] = (np.array(new_data[i*32:(i+1)*32], dtype='float')-2**15)*MICROVOLTS_PER_COUNT
+
+            if self.draw_point == 0:
+                self.plotBuff = np.concatenate((self.newBuff[:,:],
+                    self.plotBuff[:,self.nrefresh:]),1)
+            elif self.draw_point + self.nrefresh > self.nsamps:
+                # overflow of new buffer back to beginning of plot
+                overflow_amount = self.draw_point + self.nrefresh - self.nsamps
+                self.plotBuff = np.concatenate((self.newBuff[:,-overflow_amount:],
+                    self.plotBuff[:,overflow_amount:self.draw_point],
+                    self.newBuff[:,:self.nrefresh-overflow_amount]),1)
+            else:
+                self.plotBuff = np.concatenate((self.plotBuff[:,:self.draw_point],
+                    self.newBuff[:,:],
+                    self.plotBuff[:,self.draw_point+self.nrefresh:]),1)
+            self.draw_point += self.nrefresh
+            self.draw_point %= self.plotBuff.shape[1]
+            self.canvas.draw_new_data(self.plotBuff)
+        except Exception as e:
+            print e
+            print 'Read from proto2bytes failed!'
+            self.stopStreaming()
+
+    def closeEvent(self, event):
+        try:
+            if hwif.isStreaming():
+                self.stopStreaming()
+        except hwif.hwifError as e:
+            print e.message
+            pass
+
+VERT_SHADER = """
+#version 120
+
+// y coordinate of the position.
+attribute float a_position;
+
+// range of displayable y-coordinates
+uniform vec2 u_yrange;
+
+// row, col, and time index.
+attribute vec3 a_index;
+varying vec3 v_index;
+
+// 2D scaling factor (zooming).
+uniform vec2 u_scale;
+
+// Number of samples per signal.
+uniform float u_nsamps;
+
+// Color.
+uniform vec4 u_colors[{NCHANNELS}];
+varying vec4 v_color;
+
+// Varying variables used for clipping in the fragment shader.
+varying vec2 v_position;
+varying vec4 v_ab;
+
+void main() {{
+    float ymin  = u_yrange.x;
+    float ymax  = u_yrange.y;
+    // Normalize data, with x in the range (0, u_nsamps-1), y in range (ymin, ymax),
+    // to fit within a subplot, with x in range (-1,1), y in range(-1,1).
+    float x = -1 + 2*a_index.z / (u_nsamps-1);
+    float y = 0 + 2*a_position / (ymax-ymin);
+    vec2 position = vec2(x, y);
+    // Find the affine transformation for the subplots.
+    vec2 a = vec2(1./{NCOLS}, 1./{NROWS})*{SUBPLOT_HORIZONTAL_FILL};
+    vec2 b = vec2(-1 + 2*(a_index.x + 0.5) / {NCOLS},
+                   1 - 2*(a_index.y + 0.5) / {NROWS});
+    // Apply the static subplot transformation + scaling.
+    gl_Position = vec4(a*u_scale*position+b, 0.0, 1.0);
+
+    int channel = int(a_index.y*{NCOLS} + a_index.x);
+    v_color = u_colors[channel];
+    v_index = a_index;
+    // For clipping test in the fragment shader.
+    v_position = gl_Position.xy;
+    v_ab = vec4(a, b);
+}}
+""".format(NCOLS=ncols, NROWS=nrows, NCHANNELS=nrows*ncols,
+        SUBPLOT_HORIZONTAL_FILL=0.95)
+
+FRAG_SHADER = """
+#version 120
+
+varying vec4 v_color;
+varying vec3 v_index;
+
+varying vec2 v_position;
+varying vec4 v_ab;
+
+void main() {
+    gl_FragColor = v_color;
+    // Discard the fragments between the signals (emulate glMultiDrawArrays).
+    if ((fract(v_index.x) > 0.) || (fract(v_index.y) > 0.))
+        discard;
+    // Clipping test.
+    vec2 test = abs((v_position.xy-v_ab.zw)/v_ab.xy);
+    if ((test.x > 1) || (test.y > 1))
+        discard;
+}
+"""
+
+ncols = 4
+nrows = 8
+
+class ChipCanvas(app.Canvas):
+
+    def __init__(self, nsamps, nrefresh, ymin, ymax, parent=None):
+
+        self.parent = parent
+        self.nrefresh = nrefresh
+        self.nsamps = nsamps
+        self.ymin = ymin
+        self.ymax = ymax
+
+        vertex_data = np.zeros((ncols, nrows, self.nsamps),
+            dtype=[('a_index', np.float32, 3)])
+
+        self.subplot_indices = set((x,y) for x,y in \
+            itertools.product(xrange(ncols),xrange(nrows)))
+
+        point_indices = set((x,y,i) for x,y,i in \
+            itertools.product(xrange(ncols),xrange(nrows),xrange(self.nsamps)))
+        for (x,y,i) in point_indices:
+            vertex_data['a_index'][x,y,i] = np.array([x,y,i])
+        self._program = gloo.Program(VERT_SHADER, FRAG_SHADER)
+        self._program.bind(gloo.VertexBuffer(vertex_data))
+
+        # a_position field will be yvals of subplots, in uVolts
+        self.repacked_yvals = np.zeros((nrows, ncols, self.nsamps), np.float32)
+        self._program['a_position'] = self.repacked_yvals.ravel()
+
+        self._program['u_yrange'] = (self.ymin, self.ymax)
+        self._program['u_scale'] = (1., 1.)
+        self._program['u_nsamps'] = self.nsamps
+        self.default_rgb = np.array((0.559, 0.855, 0.563))
+        default_rgba = np.append(self.default_rgb, 1.0)
+        self.subplot_indices = set((x,y) for x,y in \
+            itertools.product(xrange(ncols),xrange(nrows)))
+        for (x,y) in self.subplot_indices:
+            chan_idx = y*ncols + x
+            self._program['u_colors[{CI}]'.format(CI=chan_idx)] = default_rgba
+
+        # borders around plots
+        self.border_collection = None
+
+        # labels around plots
+        self.label_visual = None
+
+        # axis to be drawn around plot mouse clicks on
+        self.selected_plot = None
+        #self.axis_x = None
+        #self.axis_y = None
+
+        super(ChipCanvas, self).__init__(app='pyqt4', keys='interactive', parent=parent)
+
+        gloo.set_viewport(0, 0, *self.physical_size)
+
+        gloo.set_state(clear_color='black', blend=True,
+                       blend_func=('src_alpha', 'one_minus_src_alpha'))
+
+        self.createBorders()
+        self.createLabels()
+        self.show()
+
+    def createBorders(self):
+        plot_w = 2.0/ncols
+        plot_h = 2.0/nrows
+
+        n_xborders = ncols - 1
+        n_yborders = nrows - 1
+
+        self.border_collection = SegmentCollection("agg")
+
+        # horizontal borders
+        c0 = np.dstack(
+             (np.linspace(-1.0+plot_w, 1.0-plot_w, n_xborders), \
+              -1.0*np.ones(n_xborders), np.zeros(n_xborders))).reshape(n_xborders, 3)
+        c1 = np.dstack(
+             (np.linspace(-1.0+plot_w, 1.0-plot_w, n_xborders), \
+              np.ones(n_xborders), np.zeros(n_xborders))).reshape(n_xborders, 3)
+        self.border_collection.append(c0, c1)
+
+        # vertical borders
+        r0 = np.dstack(
+             (-1.0*np.ones(n_yborders), \
+              np.linspace(-1.0+plot_h, 1.0-plot_h, n_yborders), \
+              np.zeros(n_yborders))).reshape(n_yborders, 3)
+        r1 = np.dstack(
+             (np.ones(n_yborders), \
+              np.linspace(-1.0+plot_h, 1.0-plot_h, n_yborders), \
+              np.zeros(n_yborders))).reshape(n_yborders, 3)
+        self.border_collection.append(r0, r1)
+
+        self.border_collection['antialias'] = 1
+        self.border_collection['viewport'] = 0, 0, self.physical_size[0], self.physical_size[1]
+        self.border_collection['color'] = (1.0, 1.0, 1.0, 1.0)
+
+    def createLabels(self):
+        texts = []
+        poses = []
+        a = (self.physical_size[0]/ncols, self.physical_size[1]/nrows)
+        font_size = 8
+        for (x,y) in self.subplot_indices:
+            chan_idx = y*ncols + x + 32*self.parent.chip
+            texts.append('Channel {c}'.format(c=chan_idx))
+            poses.append((a[0]*x, a[1]*(y+0.125)))
+        self.label_visual = visuals.TextVisual(text=texts, 
+            color=(0.5,0.5,0.5,1.0), font_size=font_size, 
+            pos=poses, anchor_x='left')
+        self.label_visual.transform = transforms.NullTransform()
+
+    def createAxis(self):
+        plot_w = 1.0/ncols
+        plot_h = 1.0/nrows
+        x_margin = 0.025 # plots have 0.025*plot_w margins to the left & right
+        plot_x, plot_y = self.selected_plot
+        pos_xax = np.array([[plot_w*(self.plot_x + x_margin),
+                             plot_h*(plot_y + 0.5)],
+                            [plot_w*(self.plot_x + 1.0 - x_margin),
+                             plot_h*(plot_y + 0.5)]])
+        pos_xax *= np.array([self.physical_size[0], self.physical_size[1]])
+
+        samps_visible = self.nrefresh*self._program['u_scale'][0]
+        time_visible  = samps_visible/30.0    # in ms
+        time_0 , time_1 = 0.0, time_visible
+        self.axis_x = visuals.AxisVisual(pos_xax, (time_0, time_1), (0., 1.))
+
+        pos_yax = np.array([[plot_w*(self.plot_x + x_margin),
+                             plot_h*(plot_y)],
+                            [plot_w*(self.plot_x + x_margin),
+                             plot_h*(plot_y + 1.0)]])
+        pos_yax *= np.array([self.physical_size[0], self.physical_size[1]])
+
+        uVolts_0, uVolts_1 = self._program['u_scale'][1]*(self.ymin, self.ymax)
+        self.axis_y = visuals.AxisVisual(pos_yax, (uVolts_0, uVolts_1), (1., 0.))
+
+        vp = 0, 0, self.physical_size[0], self.physical_size[1]
+        self.axis_x.transforms.configure(canvas=self, viewport=vp)
+        self.axis_y.transforms.configure(canvas=self, viewport=vp)
+
+    def focusPlot(self):
+        # unfocus non-selected subplots
+        unfocused_color = np.append(((0.25/0.855)*self.default_rgb), 1.0)
+        for (x,y) in self.subplot_indices:
+            chan_idx = y*ncols + x
+            self._program['u_colors[{C}]'.format(C=chan_idx)] = unfocused_color
+
+        # focus selcted plot
+        plot_x, plot_y = self.selected_plot
+        selected_idx = plot_y*ncols + plot_x
+        focused_color = (1.0, 1.0, 1.0, 1.0)
+        self._program['u_colors[{C}]'.format(C=selected_idx)] = focused_color
+
+    def unfocusPlot(self):
+        default_color = np.append(self.default_rgb, 1.0)
+        for (x,y) in self.subplot_indices:
+            chan_idx = y*ncols + x
+            self._program['u_colors[{C}]'.format(C=chan_idx)] = default_color
+        self.selected_plot = None
+
+    # used by parent widget. new_yvals comes in as an array with shape (32, nsamps)
+    def draw_new_data(self, new_yvals):
+        for chan in xrange(ncols*nrows):
+            self.repacked_yvals[chan//ncols, chan%ncols,:] = new_yvals[chan,:]
+        self._program['a_position'] = self.repacked_yvals.ravel().astype(np.float32)
+        self.update()
+
+    def on_resize(self, event):
+        vp = 0, 0, self.physical_size[0], self.physical_size[1]
+        self.context.set_viewport(*vp)
+        #if self.selected_plot != None:
+        #    self.createAxis()
+        self.border_collection['viewport'] = vp
+        self.createLabels()
+        self.label_visual.transforms.configure(canvas=self, viewport=vp)
+        self.update()
+
+    def on_draw(self, event):
+        gloo.clear()
+        self._program.draw('line_strip')
+        #if self.selected_plot != None:
+        #    self.axis_x.draw()
+        #    self.axis_y.draw()
+        self.border_collection.draw()
+        self.label_visual.draw()
+
+    def on_mouse_wheel(self, event):
+        d = np.sign(event.delta[1]) * .05
+        scale_x, scale_y = self._program['u_scale']
+        if 'Control' in event.modifiers:
+            scale_x_new, scale_y_new = (max(1, scale_x*np.exp(0.0*d)),
+                                        max(1, scale_y*np.exp(2.5*d)))
+        else:
+            scale_x_new, scale_y_new = (max(1, scale_x*np.exp(2.5*d)),
+                                        max(1, scale_y*np.exp(0.0*d)))
+        # constrain scale factors
+        range_x_new = self.nsamps/(30*scale_x_new)
+        if range_x_new < self.parent.frame_period:
+            range_x_new = self.parent.frame_period
+            scale_x_new = self.nsamps/(30*range_x_new)
+        range_y_new = self.parent.deltay_uv/scale_y_new
+        if range_y_new < MICROVOLTS_PER_COUNT:
+            range_y_new = MICROVOLTS_PER_COUNT
+            scale_y_new = self.parent.deltay_uv/range_y_new
+
+        self._program['u_scale'] = (scale_x_new, scale_y_new)
+        self.parent.setInfoLabel(self.nsamps/(30*scale_x_new), self.parent.deltay_uv/scale_y_new)
+        self.update()
+
+    def on_mouse_press(self, click):
+        # plot that mouse is within
+        plot_x = ncols*click.pos[0]/self.size[0]
+        plot_y = nrows*click.pos[1]/self.size[1]
+        if (plot_x, plot_y) != self.selected_plot:
+            self.selected_plot = (plot_x, plot_y)
+            self.focusPlot()
+        else:
+            self.unfocusPlot()
+        #self.createAxis()
+        self.update()
+
+if __name__=='__main__':
+    import sys
+    from StreamDialog import StreamDialog
+    if len(sys.argv) < 2:
+        print "Need location of WillowGUI source files as first command-line argument."
+        sys.exit()
+
+    print "doing things"
+    sys.path.insert(0, sys.argv[1])
+    import hwif, config
+    # start daemon
+    subprocess.call(['killall', 'leafysd'])
+    subprocess.call(['killall', 'proto2bytes'])
+    daemonProcess = subprocess.Popen([os.path.join(config.daemonDir, 'build/leafysd'),
+                                     '-N', '-A', '192.168.1.2', '-I',
+                                     config.networkInterface])
+    hwif.init()
+    app = QtGui.QApplication(sys.argv)
+    dlg = StreamDialog()
+    if dlg.exec_():
+        params = dlg.getParams()
+        streamWindow = StreamWindow(params)
+        streamWindow.show()
+    app.exec_()
