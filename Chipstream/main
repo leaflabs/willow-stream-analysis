@@ -476,15 +476,11 @@ class ChipCanvas(app.Canvas):
 
 if __name__=='__main__':
     import sys
-    print "any stuff at all"
     from StreamDialog import StreamDialog
     if len(sys.argv) < 2:
         print "Need location of proto2bytes executable as first command-line argument."
         sys.exit()
-
     proto2bytes_path = str(sys.argv[1])
-
-    print "doing things, wow"
     app = QtGui.QApplication(sys.argv)
     dlg = StreamDialog()
     if dlg.exec_():
