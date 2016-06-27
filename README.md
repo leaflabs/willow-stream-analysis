@@ -1,2 +1,2 @@
 # willow-streaming-analysis
-streaming analysis scripts for willowGUI
+streaming analysis scripts for willowGUI (currently experimental)
