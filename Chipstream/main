@@ -37,7 +37,7 @@ def calculateTicks(axisrange):
 
 class StreamWindow(QtGui.QWidget):
 
-    def __init__(self, params):
+    def __init__(self, params, proto2bytes_filename):
         super(StreamWindow, self).__init__(None)
 
         self.chip = params['chip']
@@ -48,11 +48,7 @@ class StreamWindow(QtGui.QWidget):
         self.yrange_cnts = [int(y*5+2**15) for y in self.yrange_uV]
         self.refreshRate = params['refreshRate']
 
-        try:
-            hwif.setSubsamples_byChip(self.chip)
-        except hwif.hwifError as e:
-            print e.message
-            pass
+        self.hwif_request('setSubsamples_byChip', str(self.chip))
 
         ###############################
         # stream buffers, timers, etc.
@@ -72,7 +68,7 @@ class StreamWindow(QtGui.QWidget):
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.updatePlot)
 
-        self.proto2bytes_filename = os.path.join(config.daemonDir, 'build/proto2bytes')
+        self.proto2bytes_filename = os.path.abspath(proto2bytes_filename)
 
         #########################
         # vispy plotting stuff
@@ -114,41 +110,22 @@ class StreamWindow(QtGui.QWidget):
         self.setWindowTitle('Willow Live Streaming')
         self.setWindowIcon(QtGui.QIcon('../img/round_logo_60x60.png'))
 
+    def hwif_request(self, *args):
+        '''Write to stdout requests to Willow hardware; WillowGUI will execute
+        these requests if it can. '''
+        sys.stderr.write('hwif_req: ' + ', '.join(args))
+
     def startStreaming(self):
-        try:
-            hwif.startStreaming_subsamples()
-            self.toggleStdin(True)
-            print 'Started streaming.'
-            pass
-        except hwif.AlreadyError:
-            #self.toggleStdin(True) # ideally this would start the plot updating, but for now it fails
-            print 'Hardware was already streaming. Try stopping and restarting stream.'
-            pass
-        except hwif.hwifError as e:
-            print e.message
-            pass
+        self.hwif_request('startStreaming_subsamples')
+        self.toggleStdin(True)
 
     def stopStreaming(self):
-        try:
-            hwif.stopStreaming()
-            print 'Stopped streaming.'
-            pass
-        except hwif.AlreadyError:
-            self.toggleStdin(False)
-            print 'Already not streaming'
-            pass
-        except AttributeError:
-            # TODO what's up with this?
-            print 'AttributeError: Pipe object does not exist'
-            pass
-        except hwif.hwifError as e:
-            print e.message
-            pass
-        finally:
-            self.toggleStdin(False)
+        self.hwif_request('stopStreaming')
+        self.toggleStdin(False)
 
     def toggleStdin(self, enable):
         if enable:
+            print "spawning proto2bytes subprocess"
             self.proto2bytes_po = subprocess.Popen([self.proto2bytes_filename,
                 '-A'], stdout=subprocess.PIPE,
                 # comment this out to view stderr in terminal (kinda useful for debugging)
@@ -202,12 +179,7 @@ class StreamWindow(QtGui.QWidget):
             self.stopStreaming()
 
     def closeEvent(self, event):
-        try:
-            if hwif.isStreaming():
-                self.stopStreaming()
-        except hwif.hwifError as e:
-            print e.message
-            pass
+        self.stopStreaming()
 
 VERT_SHADER = """
 #version 120
@@ -504,25 +476,19 @@ class ChipCanvas(app.Canvas):
 
 if __name__=='__main__':
     import sys
+    print "any stuff at all"
     from StreamDialog import StreamDialog
     if len(sys.argv) < 2:
-        print "Need location of WillowGUI source files as first command-line argument."
+        print "Need location of proto2bytes executable as first command-line argument."
         sys.exit()
 
-    print "doing things"
-    sys.path.insert(0, sys.argv[1])
-    import hwif, config
-    # start daemon
-    subprocess.call(['killall', 'leafysd'])
-    subprocess.call(['killall', 'proto2bytes'])
-    daemonProcess = subprocess.Popen([os.path.join(config.daemonDir, 'build/leafysd'),
-                                     '-N', '-A', '192.168.1.2', '-I',
-                                     config.networkInterface])
-    hwif.init()
+    proto2bytes_path = str(sys.argv[1])
+
+    print "doing things, wow"
     app = QtGui.QApplication(sys.argv)
     dlg = StreamDialog()
     if dlg.exec_():
         params = dlg.getParams()
-        streamWindow = StreamWindow(params)
+        streamWindow = StreamWindow(params, proto2bytes_path)
         streamWindow.show()
     app.exec_()
