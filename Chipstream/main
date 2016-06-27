@@ -178,9 +178,6 @@ class StreamWindow(QtGui.QWidget):
             print 'Read from proto2bytes failed!'
             self.stopStreaming()
 
-    def closeEvent(self, event):
-        self.stopStreaming()
-
 VERT_SHADER = """
 #version 120
 
