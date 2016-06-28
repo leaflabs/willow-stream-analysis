@@ -6,8 +6,8 @@ Python GUI, a compiled program, etc. We require that analysis programs take as
 their first command-line arguments the directory of the proto2bytes utility that
 ships with the leafysd daemon program (by default, /path/to/leafysd/util).
 In order to run the stream analysis process, however, another process (such as
-the WillowGUI) must consume your analysis script's stderr as described below in
-[Datanode transactions].
+the WillowGUI) must consume your analysis script's stderr as described
+[below] (#datanode-transactions).
 
 To make this work with WillowGUI, set the "Stream Analysis Directory"
 parameter in the Config Wizard, or else in the Settings menu during runtime.
