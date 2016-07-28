@@ -2,16 +2,17 @@
 
 from PyQt4 import QtCore, QtGui
 
-import subprocess, os, select
+import subprocess, os, select, sys
 import numpy as np
 import itertools
 import struct
 
-from StreamDialog import StreamDialog
-
 from vispy import gloo, app, scene, visuals
 from vispy.visuals import transforms
 from vispy.visuals.collections import SegmentCollection
+
+sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+from filtering import FilterPlotWindow
 
 nrows = 8
 ncols = 4
@@ -19,33 +20,15 @@ num_signals = nrows*ncols
 
 MICROVOLTS_PER_COUNT = 0.195
 
-def calculateTicks(axisrange):
-    delta = axisrange[1] - axisrange[0]
-    # delta must be greater than 1 but less than 100000; check for this somewhere
-    increments = [10**i for i in range(4,-1,-1)]
-    i = 0
-    increment = None
-    while not increment:
-        inc = increments[i]
-        if delta > 3*inc:
-            increment = inc
-        i += 1
-    multiple = axisrange[0]//increment
-    tick0 = (multiple+1)*increment
-    ticks = range(tick0, axisrange[1], increment)
-    return ticks
-
 class StreamWindow(QtGui.QWidget):
 
     def __init__(self, params, proto2bytes_filename):
         super(StreamWindow, self).__init__(None)
 
         self.chip = params['chip']
-        ymin = params['ymin']
-        ymax = params['ymax']
-        self.yrange_uV = [ymin, ymax]
+        ymin = -6390
+        ymax = 6390 
         self.deltay_uv = ymax - ymin
-        self.yrange_cnts = [int(y*5+2**15) for y in self.yrange_uV]
         self.refreshRate = params['refreshRate']
 
         self.hwif_request('setSubsamples_byChip', str(self.chip))
@@ -57,10 +40,8 @@ class StreamWindow(QtGui.QWidget):
         sr = 30000  # sample rate
         frame_rate = self.refreshRate
         self.frame_period = 1000//frame_rate     # frame period, in ms
-        self.xrangems = params['xrange']
         self.nsamps = 30*params['xrange']   # number of samples to display
         self.nrefresh = sr//frame_rate   # new samples collected before refresh
-        self.xvalues = np.arange(self.nsamps, dtype='int')
         self.plotBuff = np.zeros((32, self.nsamps), dtype='float')
         self.newBuff = np.zeros((32, self.nrefresh), dtype='float')
         self.draw_point = 0.0
@@ -90,12 +71,67 @@ class StreamWindow(QtGui.QWidget):
         self.stopButton.setIconSize(QtCore.QSize(25,25))
         self.stopButton.clicked.connect(self.stopStreaming)
 
+        self.filterCheckbox = QtGui.QCheckBox('Filtering displayed data')
+        self.filterCheckbox.setCheckState(QtCore.Qt.Unchecked)
+        self.filtering = False
+        self.filterCheckbox.toggled.connect(self.toggleFiltering)
+        self.plotHButton = QtGui.QPushButton('Plot Transfer Function')
+        self.plotHButton.clicked.connect(self.launchFilterPlot)
+        self.lowcutLabel = QtGui.QLabel('Lower cutoff (Hz)')
+        self.lowcutLine = QtGui.QLineEdit('300')
+        self.lowcutLine.setMaxLength(6)
+        self.lowcutLine.setValidator(QtGui.QIntValidator())
+        self.lowcutAccept = QtGui.QPushButton('Update lowcut')
+        self.lowcutAccept.clicked.connect(self.setLowcut)
+        self.setLowcut()
+        self.highcutLabel = QtGui.QLabel('Higher cutoff (Hz)')
+        self.highcutLine = QtGui.QLineEdit('9500')
+        self.highcutLine.setMaxLength(6)
+        self.highcutLine.setValidator(QtGui.QIntValidator())
+        self.highcutLine.editingFinished.connect(self.setHighcut)
+        self.highcutAccept = QtGui.QPushButton('Update highcut')
+        self.highcutAccept.clicked.connect(self.setHighcut)
+        self.setHighcut()
+
+        self.filterPanel = QtGui.QWidget()
+        filterAccept = QtGui.QWidget()
+        filterParams = QtGui.QWidget()
+        filterAcceptLayout = QtGui.QVBoxLayout()
+        filterParamsLayout = QtGui.QGridLayout()
+        filterAcceptLayout.addWidget(self.filterCheckbox)
+        filterAcceptLayout.addWidget(self.plotHButton)
+        filterParamsLayout.addWidget(self.lowcutLabel, 0,0)
+        filterParamsLayout.addWidget(self.lowcutLine, 1,0)
+        filterParamsLayout.addWidget(self.lowcutAccept, 2,0)
+        filterParamsLayout.addWidget(self.highcutLabel, 0,1)
+        filterParamsLayout.addWidget(self.highcutLine, 1,1)
+        filterParamsLayout.addWidget(self.highcutAccept, 2,1)
+        filterAccept.setLayout(filterAcceptLayout)
+        filterParams.setLayout(filterParamsLayout)
+        filterLayout = QtGui.QHBoxLayout()
+        filterLayout.addWidget(filterAccept)
+        filterLayout.addWidget(filterParams)
+        self.filterPanel.setLayout(filterLayout)
+
+        self.chipNumberLine = QtGui.QLineEdit(str(self.chip))
+        self.chipNumberLine.setMaxLength(2)
+        self.setChipButton = QtGui.QPushButton('Plot chip specified')
+        self.setChipButton.clicked.connect(self.changeChip)
+        self.chipSelection = QtGui.QWidget()
+        chipLayout = QtGui.QVBoxLayout()
+        chipLayout.addWidget(self.chipNumberLine)
+        chipLayout.addWidget(self.setChipButton)
+        self.chipSelection.setLayout(chipLayout)
+
         self.buttonPanel = QtGui.QWidget()
-        tmp = QtGui.QHBoxLayout()
-        tmp.addWidget(self.startButton)
-        tmp.addWidget(self.stopButton)
-        self.buttonPanel.setLayout(tmp)
-        self.buttonPanel.setMaximumHeight(50)
+        buttonsLayout = QtGui.QHBoxLayout()
+        buttonsLayout.addWidget(self.startButton)
+        buttonsLayout.addWidget(self.stopButton)
+        buttonsLayout.addWidget(self.chipSelection)
+        buttonsLayout.addWidget(self.filterPanel)
+        self.buttonPanel.setLayout(buttonsLayout)
+        self.buttonPanel.setMaximumHeight(150)
+        self.buttonPanel.setMaximumWidth(800)
 
         self.layout = QtGui.QVBoxLayout()
         self.layout.addWidget(self.buttonPanel)
@@ -110,9 +146,29 @@ class StreamWindow(QtGui.QWidget):
         self.setWindowTitle('Willow Live Streaming')
         self.setWindowIcon(QtGui.QIcon('../img/round_logo_60x60.png'))
 
+        self.canvas.draw_new_data(np.zeros((32, self.nsamps), dtype='float'), 
+                                  self.nsamps)
+
+    def toggleFiltering(self, checkbox_state):
+        if checkbox_state == QtCore.Qt.Checked:
+            self.filtering = True
+        else:
+            self.filtering = False
+    
+    def setLowcut(self):
+        self.lowcut = float(self.lowcutLine.text())
+
+    def setHighcut(self):
+        self.highcut = float(self.highcutLine.text())
+
+    def launchFilterPlot(self):
+        filt = self.getFilter()
+        self.fpw = FilterPlotWindow(filt, [self.lowcut, self.highcut])
+        self.fpw.show()
+
     def hwif_request(self, *args):
-        '''Write to stdout requests to Willow hardware; WillowGUI will execute
-        these requests if it can. '''
+        """Write to stdout requests to Willow hardware; WillowGUI will execute
+        these requests if it can. """
         sys.stderr.write('hwif_req: ' + ', '.join(args))
 
     def startStreaming(self):
@@ -145,6 +201,27 @@ class StreamWindow(QtGui.QWidget):
         self.infoLabel.setText('Chip %d: xrange = %3.2f ms, yrange = %3.2f uV\n'
                                 '(mousewheel zooms horizontally, ctrl+mousewheel zooms vertically)'
                                         % (self.chip, xr, yr))
+    def getFilter(self):
+        nyq = 1.5e4    # 30 kHz sampling frequency -> 15 kHz nyquist rate
+        order = 5
+        warnings.filterwarnings('error') # catch division by zero when filtering
+        try:
+            b, a = signal.butter(order,[self.lowcut/nyq, self.highcut/nyq],btype='bandpass')
+            warnings.filterwarnings('default')
+            return b, a
+        except:
+            raise Exception('Illegal filtering cutoffs (low={}, high={}).'.format(
+                   self.lowcut, self.highcut))
+            warnings.filterwarnings('default')
+            return 1, 1
+
+    def changeChip(self):
+        chip = int(self.chipNumberLine.text())
+        self.chip = chip
+        self.hwif_request('setSubsamples_byChip', str(self.chip))
+        self.draw_point = 0.0
+        self.canvas.draw_new_data(np.zeros((32, self.nsamps), dtype='float'), 
+                                  self.nsamps)
 
     def updatePlot(self):
         # 32 channels of 2-byte data, gathered over self.nrefresh samples
@@ -160,19 +237,27 @@ class StreamWindow(QtGui.QWidget):
             if self.draw_point == 0:
                 self.plotBuff = np.concatenate((self.newBuff[:,:],
                     self.plotBuff[:,self.nrefresh:]),1)
+                last_point = self.draw_point + self.nrefresh
             elif self.draw_point + self.nrefresh > self.nsamps:
                 # overflow of new buffer back to beginning of plot
                 overflow_amount = self.draw_point + self.nrefresh - self.nsamps
                 self.plotBuff = np.concatenate((self.newBuff[:,-overflow_amount:],
                     self.plotBuff[:,overflow_amount:self.draw_point],
                     self.newBuff[:,:self.nrefresh-overflow_amount]),1)
+                last_point = overflow_amt
             else:
                 self.plotBuff = np.concatenate((self.plotBuff[:,:self.draw_point],
                     self.newBuff[:,:],
                     self.plotBuff[:,self.draw_point+self.nrefresh:]),1)
+                last_point = self.draw_point + self.nrefresh
+
+            if self.filtering:
+                b, a = self.getFilter()
+                self.plotBuff = signal.filtfilt(b, a, self.plotBuff, axis=1)
+
+            self.canvas.draw_new_data(self.plotBuff, last_point)
             self.draw_point += self.nrefresh
             self.draw_point %= self.plotBuff.shape[1]
-            self.canvas.draw_new_data(self.plotBuff)
         except Exception as e:
             print e
             print 'Read from proto2bytes failed!'
@@ -184,10 +269,10 @@ VERT_SHADER = """
 // y coordinate of the position.
 attribute float a_position;
 
-// range of displayable y-coordinates
+// Range of displayable y-coordinates.
 uniform vec2 u_yrange;
 
-// row, col, and time index.
+// Row, col, and time index.
 attribute vec3 a_index;
 varying vec3 v_index;
 
@@ -201,13 +286,17 @@ uniform float u_nsamps;
 uniform vec4 u_colors[{NCHANNELS}];
 varying vec4 v_color;
 
+// Index in plot representing where new data begins to be drawn.
+// (Used for coloring eye-candy.)
+uniform int u_latest_point;
+
 // Varying variables used for clipping in the fragment shader.
 varying vec2 v_position;
 varying vec4 v_ab;
 
 void main() {{
-    float ymin  = u_yrange.x;
-    float ymax  = u_yrange.y;
+    float ymin = u_yrange.x;
+    float ymax = u_yrange.y;
     // Normalize data, with x in the range (0, u_nsamps-1), y in range (ymin, ymax),
     // to fit within a subplot, with x in range (-1,1), y in range(-1,1).
     float x = -1 + 2*a_index.z / (u_nsamps-1);
@@ -221,7 +310,18 @@ void main() {{
     gl_Position = vec4(a*u_scale*position+b, 0.0, 1.0);
 
     int channel = int(a_index.y*{NCOLS} + a_index.x);
+
     v_color = u_colors[channel];
+    // Make most recent data brighter and least-recent data dimmer.
+    // This makes following new data easier on eyes.
+    float oldness;
+    if ((a_index.z <= u_latest_point))
+        oldness = u_latest_point - a_index.z;
+    else
+        oldness = u_latest_point + (u_nsamps - a_index.z);
+    v_color.x = v_color.x * 1.0 - (oldness/u_nsamps)*0.75;
+    v_color.y = v_color.y * 1.0 - (oldness/u_nsamps)*0.75;
+    v_color.z = v_color.z * 1.0 - (oldness/u_nsamps)*0.75;
     v_index = a_index;
     // For clipping test in the fragment shader.
     v_position = gl_Position.xy;
@@ -251,9 +351,6 @@ void main() {
 }
 """
 
-ncols = 4
-nrows = 8
-
 class ChipCanvas(app.Canvas):
 
     def __init__(self, nsamps, nrefresh, ymin, ymax, parent=None):
@@ -281,6 +378,7 @@ class ChipCanvas(app.Canvas):
         self.repacked_yvals = np.zeros((nrows, ncols, self.nsamps), np.float32)
         self._program['a_position'] = self.repacked_yvals.ravel()
 
+        self._program['u_latest_point'] = self.nrefresh
         self._program['u_yrange'] = (self.ymin, self.ymax)
         self._program['u_scale'] = (1., 1.)
         self._program['u_nsamps'] = self.nsamps
@@ -411,10 +509,11 @@ class ChipCanvas(app.Canvas):
         self.selected_plot = None
 
     # used by parent widget. new_yvals comes in as an array with shape (32, nsamps)
-    def draw_new_data(self, new_yvals):
+    def draw_new_data(self, new_yvals, latest_point):
         for chan in xrange(ncols*nrows):
             self.repacked_yvals[chan//ncols, chan%ncols,:] = new_yvals[chan,:]
         self._program['a_position'] = self.repacked_yvals.ravel().astype(np.float32)
+        self._program['u_latest_point'] = latest_point
         self.update()
 
     def on_resize(self, event):
@@ -472,7 +571,6 @@ class ChipCanvas(app.Canvas):
         self.update()
 
 if __name__=='__main__':
-    import sys
     from StreamDialog import StreamDialog
     if len(sys.argv) < 2:
         print "Need location of proto2bytes executable as first command-line argument."
