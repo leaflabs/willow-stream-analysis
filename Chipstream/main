@@ -150,10 +150,7 @@ class StreamWindow(QtGui.QWidget):
                                   self.nsamps)
 
     def toggleFiltering(self, checkbox_state):
-        if checkbox_state == QtCore.Qt.Checked:
-            self.filtering = True
-        else:
-            self.filtering = False
+        self.filtering = checkbox_state
     
     def setLowcut(self):
         self.lowcut = float(self.lowcutLine.text())
