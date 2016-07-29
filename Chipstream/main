@@ -316,9 +316,9 @@ void main() {{
         oldness = u_latest_point - a_index.z;
     else
         oldness = u_latest_point + (u_nsamps - a_index.z);
-    v_color.x = v_color.x * 1.0 - (oldness/u_nsamps)*0.75;
-    v_color.y = v_color.y * 1.0 - (oldness/u_nsamps)*0.75;
-    v_color.z = v_color.z * 1.0 - (oldness/u_nsamps)*0.75;
+    v_color.x = v_color.x * 1.0 - (oldness/u_nsamps)*0.60;
+    v_color.y = v_color.y * 1.0 - (oldness/u_nsamps)*0.60;
+    v_color.z = v_color.z * 1.0 - (oldness/u_nsamps)*0.60;
     v_index = a_index;
     // For clipping test in the fragment shader.
     v_position = gl_Position.xy;
@@ -402,7 +402,7 @@ class ChipCanvas(app.Canvas):
 
         gloo.set_viewport(0, 0, *self.physical_size)
 
-        gloo.set_state(clear_color='black', blend=True,
+        gloo.set_state(clear_color=(0.10, 0.10, 0.10, 1.0), blend=True,
                        blend_func=('src_alpha', 'one_minus_src_alpha'))
 
         self.createBorders()
@@ -487,7 +487,8 @@ class ChipCanvas(app.Canvas):
 
     def focusPlot(self):
         # unfocus non-selected subplots
-        unfocused_color = np.append(((0.25/0.855)*self.default_rgb), 1.0)
+        unfocused_color = np.append(((0.75/0.855)*self.default_rgb), 1.0)
+        print unfocused_color
         for (x,y) in self.subplot_indices:
             chan_idx = y*ncols + x
             self._program['u_colors[{C}]'.format(C=chan_idx)] = unfocused_color
