@@ -43,6 +43,7 @@ class StreamWindow(QtGui.QWidget):
         self.nsamps = 30*params['xrange']   # number of samples to display
         self.nrefresh = sr//frame_rate   # new samples collected before refresh
         self.plotBuff = np.zeros((32, self.nsamps), dtype='float')
+        self.plotBuff_raw = np.zeros((32, self.nsamps), dtype='float')
         self.newBuff = np.zeros((32, self.nrefresh), dtype='float')
         self.draw_point = 0.0
 
@@ -232,25 +233,27 @@ class StreamWindow(QtGui.QWidget):
                 self.newBuff[:,i] = (np.array(new_data[i*32:(i+1)*32], dtype='float')-2**15)*MICROVOLTS_PER_COUNT
 
             if self.draw_point == 0:
-                self.plotBuff = np.concatenate((self.newBuff[:,:],
-                    self.plotBuff[:,self.nrefresh:]),1)
+                self.plotBuff_raw = np.concatenate((self.newBuff[:,:],
+                    self.plotBuff_raw[:,self.nrefresh:]),1)
                 last_point = self.draw_point + self.nrefresh
             elif self.draw_point + self.nrefresh > self.nsamps:
                 # overflow of new buffer back to beginning of plot
                 overflow_amount = self.draw_point + self.nrefresh - self.nsamps
-                self.plotBuff = np.concatenate((self.newBuff[:,-overflow_amount:],
-                    self.plotBuff[:,overflow_amount:self.draw_point],
+                self.plotBuff_raw = np.concatenate((self.newBuff[:,-overflow_amount:],
+                    self.plotBuff_raw[:,overflow_amount:self.draw_point],
                     self.newBuff[:,:self.nrefresh-overflow_amount]),1)
                 last_point = overflow_amt
             else:
-                self.plotBuff = np.concatenate((self.plotBuff[:,:self.draw_point],
+                self.plotBuff_raw = np.concatenate((self.plotBuff_raw[:,:self.draw_point],
                     self.newBuff[:,:],
-                    self.plotBuff[:,self.draw_point+self.nrefresh:]),1)
+                    self.plotBuff_raw[:,self.draw_point+self.nrefresh:]),1)
                 last_point = self.draw_point + self.nrefresh
 
             if self.filtering:
                 b, a = self.getFilter()
-                self.plotBuff = signal.filtfilt(b, a, self.plotBuff, axis=1)
+                self.plotBuff = signal.filtfilt(b, a, self.plotBuff_raw, axis=1)
+            else:
+                self.plotBuff = self.plotBuff_raw
 
             self.canvas.draw_new_data(self.plotBuff, last_point)
             self.draw_point += self.nrefresh
