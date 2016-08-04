@@ -30,6 +30,7 @@ class StreamWindow(QtGui.QWidget):
         ymax = 6390 
         self.deltay_uv = ymax - ymin
         self.refreshRate = params['refreshRate']
+        self.max_xrange = params['xrange']
 
         self.hwif_request('setSubsamples_byChip', str(self.chip))
 
@@ -40,7 +41,7 @@ class StreamWindow(QtGui.QWidget):
         sr = 30000  # sample rate
         frame_rate = self.refreshRate
         self.frame_period = 1000//frame_rate     # frame period, in ms
-        self.nsamps = 30*params['xrange']   # number of samples to display
+        self.nsamps = 30*self.max_xrange   # number of samples to display
         self.nrefresh = sr//frame_rate   # new samples collected before refresh
         self.plotBuff = np.zeros((32, self.nsamps), dtype='float')
         self.plotBuff_raw = np.zeros((32, self.nsamps), dtype='float')
@@ -137,7 +138,7 @@ class StreamWindow(QtGui.QWidget):
         self.layout = QtGui.QVBoxLayout()
         self.layout.addWidget(self.buttonPanel)
         self.infoLabel = QtGui.QLabel()
-        self.setInfoLabel(params['xrange'], self.deltay_uv)
+        self.setInfoLabel(self.max_xrange, self.deltay_uv)
         self.infoLabel.setMaximumHeight(60)
         self.layout.addWidget(self.infoLabel)
         self.layout.addWidget(self.canvas.native)
@@ -220,6 +221,7 @@ class StreamWindow(QtGui.QWidget):
         self.draw_point = 0.0
         self.canvas.draw_new_data(np.zeros((32, self.nsamps), dtype='float'), 
                                   self.nsamps)
+        self.setInfoLabel(self.max_xrange, self.deltay_uv)
 
     def updatePlot(self):
         # 32 channels of 2-byte data, gathered over self.nrefresh samples
