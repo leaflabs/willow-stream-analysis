@@ -4,8 +4,10 @@ from PyQt4 import QtCore, QtGui
 
 import subprocess, os, select, sys
 import numpy as np
+import scipy.signal as signal
 import itertools
 import struct
+import warnings
 
 from vispy import gloo, app, scene, visuals
 from vispy.visuals import transforms
