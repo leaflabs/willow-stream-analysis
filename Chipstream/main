@@ -32,7 +32,7 @@ class StreamWindow(QtGui.QWidget):
         ymax = 6390 
         self.deltay_uv = ymax - ymin
         self.refreshRate = params['refreshRate']
-        self.max_xrange = params['xrange']
+        self.deltax_ms = params['xrange']
 
         self.hwif_request('setSubsamples_byChip', str(self.chip))
 
@@ -43,7 +43,7 @@ class StreamWindow(QtGui.QWidget):
         sr = 30000  # sample rate
         frame_rate = self.refreshRate
         self.frame_period = 1000//frame_rate     # frame period, in ms
-        self.nsamps = 30*self.max_xrange   # number of samples to display
+        self.nsamps = 30*self.deltax_ms   # number of samples to display
         self.nrefresh = sr//frame_rate   # new samples collected before refresh
         self.plotBuff = np.zeros((32, self.nsamps), dtype='float')
         self.plotBuff_raw = np.zeros((32, self.nsamps), dtype='float')
@@ -140,7 +140,7 @@ class StreamWindow(QtGui.QWidget):
         self.layout = QtGui.QVBoxLayout()
         self.layout.addWidget(self.buttonPanel)
         self.infoLabel = QtGui.QLabel()
-        self.setInfoLabel(self.max_xrange, self.deltay_uv)
+        self.setInfoLabel(self.deltax_ms, self.deltay_uv)
         self.infoLabel.setMaximumHeight(60)
         self.layout.addWidget(self.infoLabel)
         self.layout.addWidget(self.canvas.native)
@@ -223,7 +223,7 @@ class StreamWindow(QtGui.QWidget):
         self.draw_point = 0.0
         self.canvas.draw_new_data(np.zeros((32, self.nsamps), dtype='float'), 
                                   self.nsamps)
-        self.setInfoLabel(self.max_xrange, self.deltay_uv)
+        self.setInfoLabel(self.deltax_ms, self.deltay_uv)
 
     def updatePlot(self):
         # 32 channels of 2-byte data, gathered over self.nrefresh samples
@@ -401,9 +401,7 @@ class ChipCanvas(app.Canvas):
         self.label_visual = None
 
         # axis to be drawn around plot mouse clicks on
-        self.selected_plot = None
-        #self.axis_x = None
-        #self.axis_y = None
+        self.selected_plots = []
 
         super(ChipCanvas, self).__init__(app='pyqt4', keys='interactive', parent=parent)
 
@@ -463,55 +461,25 @@ class ChipCanvas(app.Canvas):
             pos=poses, anchor_x='left')
         self.label_visual.transform = transforms.NullTransform()
 
-    def createAxis(self):
-        plot_w = 1.0/ncols
-        plot_h = 1.0/nrows
-        x_margin = 0.025 # plots have 0.025*plot_w margins to the left & right
-        plot_x, plot_y = self.selected_plot
-        pos_xax = np.array([[plot_w*(self.plot_x + x_margin),
-                             plot_h*(plot_y + 0.5)],
-                            [plot_w*(self.plot_x + 1.0 - x_margin),
-                             plot_h*(plot_y + 0.5)]])
-        pos_xax *= np.array([self.physical_size[0], self.physical_size[1]])
+    def focusPlots(self):
+        if self.selected_plots != []:
+            # unfocus non-selected subplots
+            unfocused_color = np.append(((0.75/0.855)*self.default_rgb), 1.0)
+            for (x,y) in self.subplot_indices:
+                chan_idx = y*ncols + x
+                self._program['u_colors[{C}]'.format(C=chan_idx)] = unfocused_color
 
-        samps_visible = self.nrefresh*self._program['u_scale'][0]
-        time_visible  = samps_visible/30.0    # in ms
-        time_0 , time_1 = 0.0, time_visible
-        self.axis_x = visuals.AxisVisual(pos_xax, (time_0, time_1), (0., 1.))
-
-        pos_yax = np.array([[plot_w*(self.plot_x + x_margin),
-                             plot_h*(plot_y)],
-                            [plot_w*(self.plot_x + x_margin),
-                             plot_h*(plot_y + 1.0)]])
-        pos_yax *= np.array([self.physical_size[0], self.physical_size[1]])
-
-        uVolts_0, uVolts_1 = self._program['u_scale'][1]*(self.ymin, self.ymax)
-        self.axis_y = visuals.AxisVisual(pos_yax, (uVolts_0, uVolts_1), (1., 0.))
-
-        vp = 0, 0, self.physical_size[0], self.physical_size[1]
-        self.axis_x.transforms.configure(canvas=self, viewport=vp)
-        self.axis_y.transforms.configure(canvas=self, viewport=vp)
-
-    def focusPlot(self):
-        # unfocus non-selected subplots
-        unfocused_color = np.append(((0.75/0.855)*self.default_rgb), 1.0)
-        print unfocused_color
-        for (x,y) in self.subplot_indices:
-            chan_idx = y*ncols + x
-            self._program['u_colors[{C}]'.format(C=chan_idx)] = unfocused_color
-
-        # focus selcted plot
-        plot_x, plot_y = self.selected_plot
-        selected_idx = plot_y*ncols + plot_x
-        focused_color = (1.0, 1.0, 1.0, 1.0)
-        self._program['u_colors[{C}]'.format(C=selected_idx)] = focused_color
-
-    def unfocusPlot(self):
-        default_color = np.append(self.default_rgb, 1.0)
-        for (x,y) in self.subplot_indices:
-            chan_idx = y*ncols + x
-            self._program['u_colors[{C}]'.format(C=chan_idx)] = default_color
-        self.selected_plot = None
+            # focus selcted plots
+            for plot in self.selected_plots:
+                plot_x, plot_y = plot
+                selected_idx = plot_y*ncols + plot_x
+                focused_color = (1.0, 1.0, 1.0, 1.0)
+                self._program['u_colors[{C}]'.format(C=selected_idx)] = focused_color
+        else:
+            default_color = np.append(self.default_rgb, 1.0)
+            for (x,y) in self.subplot_indices:
+                chan_idx = y*ncols + x
+                self._program['u_colors[{C}]'.format(C=chan_idx)] = default_color
 
     # used by parent widget. new_yvals comes in as an array with shape (32, nsamps)
     def draw_new_data(self, new_yvals, latest_point):
@@ -524,8 +492,6 @@ class ChipCanvas(app.Canvas):
     def on_resize(self, event):
         vp = 0, 0, self.physical_size[0], self.physical_size[1]
         self.context.set_viewport(*vp)
-        #if self.selected_plot != None:
-        #    self.createAxis()
         self.border_collection['viewport'] = vp
         self.createLabels()
         self.label_visual.transforms.configure(canvas=self, viewport=vp)
@@ -534,9 +500,6 @@ class ChipCanvas(app.Canvas):
     def on_draw(self, event):
         gloo.clear()
         self._program.draw('line_strip')
-        #if self.selected_plot != None:
-        #    self.axis_x.draw()
-        #    self.axis_y.draw()
         self.border_collection.draw()
         self.label_visual.draw()
 
@@ -567,12 +530,23 @@ class ChipCanvas(app.Canvas):
         # plot that mouse is within
         plot_x = ncols*click.pos[0]/self.size[0]
         plot_y = nrows*click.pos[1]/self.size[1]
-        if (plot_x, plot_y) != self.selected_plot:
-            self.selected_plot = (plot_x, plot_y)
-            self.focusPlot()
+        plot = (plot_x, plot_y)
+
+        modifiers = QtGui.QApplication.keyboardModifiers()
+
+        if modifiers & QtCore.Qt.ControlModifier:
+            # focus multiple subplots when Ctrl held down
+            if plot not in self.selected_plots:
+                self.selected_plots.append(plot)
+            else:
+                self.selected_plots.remove(plot)
         else:
-            self.unfocusPlot()
-        #self.createAxis()
+            # focus only plot most recently clicked when Ctrl not held down
+            if plot not in self.selected_plots:
+                self.selected_plots = [plot]
+            else:
+                self.selected_plots = []
+        self.focusPlots()
         self.update()
 
 if __name__=='__main__':
