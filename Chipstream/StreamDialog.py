@@ -1,4 +1,19 @@
 from PyQt4 import QtCore, QtGui
+import os
+
+class PathButton(QtGui.QPushButton):
+
+    def __init__(self, prompt, start_dir):
+        QtGui.QPushButton.__init__(self, start_dir)
+
+        self.start_dir = start_dir
+        self.prompt = prompt
+        self.clicked.connect(self.browseForPath)
+
+    def browseForPath(self):
+        filename = QtGui.QFileDialog.getOpenFileName(self, self.prompt, self.start_dir)
+        if filename:
+            self.setText(filename)
 
 class StreamDialog(QtGui.QDialog):
 
@@ -19,6 +34,12 @@ class StreamDialog(QtGui.QDialog):
         self.dialogButtons.accepted.connect(self.accept)
         self.dialogButtons.rejected.connect(self.reject)
 
+        self.impedancePath = PathButton('Select impedance file', os.path.expanduser('~'))
+        self.impedancePath.setEnabled(False)
+        self.impedanceCheckbox = QtGui.QCheckBox('Use impedance data')
+        self.impedanceCheckbox.setCheckState(QtCore.Qt.Unchecked)
+        self.impedanceCheckbox.toggled.connect(lambda s: self.impedancePath.setEnabled(s))
+
         layout = QtGui.QGridLayout()
         layout.addWidget(QtGui.QLabel('Chip Number:'), 0,0, 1,1)
         layout.addWidget(self.chipNumberLine, 0,1, 1,2)
@@ -26,7 +47,9 @@ class StreamDialog(QtGui.QDialog):
         layout.addWidget(self.xrangeLine, 2,1, 1,1)
         layout.addWidget(QtGui.QLabel('Refresh Rate (Hz):'), 3,0, 1,1)
         layout.addWidget(self.refreshRateLine, 3,1, 1,2)
-        layout.addWidget(self.dialogButtons, 4,2, 1,2)
+        layout.addWidget(self.impedanceCheckbox, 4,0, 1,1)
+        layout.addWidget(self.impedancePath, 4,1, 1,2)
+        layout.addWidget(self.dialogButtons, 5,1, 1,2)
 
         self.setLayout(layout)
         self.setWindowTitle('Playback Window Parameters')
@@ -39,5 +62,9 @@ class StreamDialog(QtGui.QDialog):
         params['chip'] = int(self.chipNumberLine.text())
         params['xrange'] = int(self.xrangeLine.text())
         params['refreshRate'] = int(self.refreshRateLine.text())
+        if self.impedanceCheckbox.checkState():
+            params['impedancePath'] = str(self.impedancePath.text())
+        else:
+            params['impedancePath'] = None
         return params
 
