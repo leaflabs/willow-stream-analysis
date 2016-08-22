@@ -596,12 +596,15 @@ class ChipCanvas(app.Canvas):
     def on_mouse_wheel(self, event):
         d = np.sign(event.delta[1]) * .05
         scale_x, scale_y = self._program['u_scale']
-        if 'Control' in event.modifiers:
+        if 'Control' and 'Shift' in event.modifiers:
             scale_x_new, scale_y_new = (max(1, scale_x*np.exp(0.0*d)),
                                         max(1, scale_y*np.exp(2.5*d)))
-        else:
+        elif 'Control' in event.modifiers:
             scale_x_new, scale_y_new = (max(1, scale_x*np.exp(2.5*d)),
                                         max(1, scale_y*np.exp(0.0*d)))
+        else:
+            return
+
         # constrain scale factors
         range_x_new = self.nsamps/(30*scale_x_new)
         if range_x_new < self.parent.frame_period:
