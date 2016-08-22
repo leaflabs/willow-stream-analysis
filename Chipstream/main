@@ -6,6 +6,7 @@ import subprocess, os, select, sys
 import numpy as np
 import scipy.signal as signal
 import itertools, struct, warnings
+import pickle
 import h5py
 
 from vispy import gloo, app, scene, visuals
@@ -34,14 +35,28 @@ class StreamWindow(QtGui.QWidget):
             self.impedance = None
             self.display_impedance = False
 
+        if params['probeMapPath'] != None:
+            self.probeMap = pickle.load(open(params['probeMapPath'],
+                                             'rb')) # (shank, col, row): channel
+        else:
+            self.probeMap = None
+
         ymin = -6390
-        ymax = 6390 
+        ymax = 6390
         self.deltay_uv = ymax - ymin
         self.refreshRate = params['refreshRate']
         self.deltax_ms = params['xrange']
 
+        self.labels = QtGui.QWidget()
         self.infoLabel = QtGui.QLabel()
         self.infoLabel.setMaximumHeight(60)
+        if self.probeMap != None:
+            self.plotLabel = QtGui.QLabel()
+            self.plotLabel.setMaximumHeight(60)
+        self.labelLayout = QtGui.QHBoxLayout()
+        self.labelLayout.addWidget(self.infoLabel)
+        self.labelLayout.addWidget(self.plotLabel)
+        self.labels.setLayout(self.labelLayout)
 
         #########################
         # vispy plotting stuff
@@ -165,7 +180,7 @@ class StreamWindow(QtGui.QWidget):
 
         self.layout = QtGui.QVBoxLayout()
         self.layout.addWidget(self.buttonPanel)
-        self.layout.addWidget(self.infoLabel)
+        self.layout.addWidget(self.labels)
         self.layout.addWidget(self.canvas.native)
 
         self.setLayout(self.layout)
@@ -173,7 +188,7 @@ class StreamWindow(QtGui.QWidget):
         self.setWindowTitle('Willow Live Streaming')
         self.setWindowIcon(QtGui.QIcon('../img/round_logo_60x60.png'))
 
-        self.canvas.draw_new_data(np.zeros((nchans, self.nsamps), dtype='float'), 
+        self.canvas.draw_new_data(np.zeros((nchans, self.nsamps), dtype='float'),
                                   self.nsamps)
 
     def toggleFiltering(self, checkbox_state):
@@ -233,6 +248,17 @@ class StreamWindow(QtGui.QWidget):
         self.infoLabel.setText('Chip %d: xrange = %3.2f ms, yrange = %3.2f uV\n'
                                 '(mousewheel zooms horizontally, ctrl+mousewheel zooms vertically)'
                                         % (self.chip, xr, yr))
+    def setPlotLabel(self, chan):
+        if self.probeMap != None:
+            if chan != None:
+                for key, value in self.probeMap.items():
+                    if value == chan and isinstance(key, tuple):
+                        (shank, row, col) = key
+                self.plotLabel.setText('Channel %d selected\n'
+                    '(shank %d, row %d, column %d)' % (chan, shank, row, col))
+            else:
+                self.plotLabel.setText('')
+
     def getFilter(self):
         nyq = 1.5e4    # 30 kHz sampling frequency -> 15 kHz nyquist rate
         order = 5
@@ -261,7 +287,7 @@ class StreamWindow(QtGui.QWidget):
             self.impMask = np.zeros_like(self.plotBuff_raw)
             self.impMask[self.bad_chans,:] = True
         self.canvas.updateLabels()
-        self.canvas.draw_new_data(np.zeros((nchans, self.nsamps), dtype='float'), 
+        self.canvas.draw_new_data(np.zeros((nchans, self.nsamps), dtype='float'),
                                   self.nsamps)
         self.setInfoLabel(self.deltax_ms, self.deltay_uv)
 
@@ -512,6 +538,14 @@ class ChipCanvas(app.Canvas):
         self.border_collection['viewport'] = 0, 0, self.physical_size[0], self.physical_size[1]
         self.border_collection['color'] = (1.0, 1.0, 1.0, 1.0)
 
+    def reportLocation(self, plot):
+        if plot != None:
+            plot_x, plot_y = plot
+            chan_idx = plot_y*ncols + plot_x + nchans*self.parent.chip
+            self.parent.setPlotLabel(chan_idx)
+        else:
+            self.parent.setPlotLabel(None)
+
     def createLabels(self):
         self.label_visual = visuals.TextVisual(text='',
             color=(0.5,0.5,0.5,1.0), font_size=8, pos=(0,0), anchor_x='left')
@@ -631,14 +665,18 @@ class ChipCanvas(app.Canvas):
             # focus multiple subplots when Ctrl held down
             if plot not in self.selected_plots:
                 self.selected_plots.append(plot)
+                self.reportLocation(plot)
             else:
+                self.reportLocation(None)
                 self.selected_plots.remove(plot)
         else:
             # focus only plot most recently clicked when Ctrl not held down
             if plot not in self.selected_plots:
                 self.selected_plots = [plot]
+                self.reportLocation(plot)
             else:
                 self.selected_plots = []
+                self.reportLocation(None)
         self.focusPlots()
         self.update()
 

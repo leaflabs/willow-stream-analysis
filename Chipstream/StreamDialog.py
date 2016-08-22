@@ -34,11 +34,18 @@ class StreamDialog(QtGui.QDialog):
         self.dialogButtons.accepted.connect(self.accept)
         self.dialogButtons.rejected.connect(self.reject)
 
-        self.impedancePath = PathButton('Select impedance file', os.path.expanduser('~'))
+        self.impedancePath = PathButton('Select impedance file',
+            os.path.dirname(os.path.realpath(__file__)))
         self.impedancePath.setEnabled(False)
         self.impedanceCheckbox = QtGui.QCheckBox('Use impedance data')
         self.impedanceCheckbox.setCheckState(QtCore.Qt.Unchecked)
         self.impedanceCheckbox.toggled.connect(lambda s: self.impedancePath.setEnabled(s))
+        self.probeMapPath = PathButton('Select probe map file',
+            os.path.dirname(os.path.realpath(__file__)))
+        self.probeMapPath.setEnabled(False)
+        self.probeMapCheckbox = QtGui.QCheckBox('Use probe map data')
+        self.probeMapCheckbox.setCheckState(QtCore.Qt.Unchecked)
+        self.probeMapCheckbox.toggled.connect(lambda s: self.probeMapPath.setEnabled(s))
 
         layout = QtGui.QGridLayout()
         layout.addWidget(QtGui.QLabel('Chip Number:'), 0,0, 1,1)
@@ -49,7 +56,9 @@ class StreamDialog(QtGui.QDialog):
         layout.addWidget(self.refreshRateLine, 3,1, 1,2)
         layout.addWidget(self.impedanceCheckbox, 4,0, 1,1)
         layout.addWidget(self.impedancePath, 4,1, 1,2)
-        layout.addWidget(self.dialogButtons, 5,1, 1,2)
+        layout.addWidget(self.probeMapCheckbox, 5,0, 1,2)
+        layout.addWidget(self.probeMapPath, 5,1, 1,2)
+        layout.addWidget(self.dialogButtons, 6,1, 1,2)
 
         self.setLayout(layout)
         self.setWindowTitle('Playback Window Parameters')
@@ -66,5 +75,8 @@ class StreamDialog(QtGui.QDialog):
             params['impedancePath'] = str(self.impedancePath.text())
         else:
             params['impedancePath'] = None
+        if self.probeMapCheckbox.checkState():
+            params['probeMapPath'] = str(self.probeMapPath.text())
+        else:
+            params['probeMapPath'] = None
         return params
-
