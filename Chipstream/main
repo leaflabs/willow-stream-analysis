@@ -17,7 +17,7 @@ from filtering import FilterPlotWindow
 
 nrows = 8
 ncols = 4
-num_signals = nrows*ncols
+nchans = nrows*ncols
 
 MICROVOLTS_PER_COUNT = 0.195
 
@@ -25,11 +25,8 @@ class StreamWindow(QtGui.QWidget):
 
     def __init__(self, params, proto2bytes_filename):
         super(StreamWindow, self).__init__(None)
-        print 'initializing StreamWindow'
 
         if params['impedancePath'] != None:
-            #f = h5py.File(os.path.abspath(params['impedancePath']))
-            print params['impedancePath']
             f = h5py.File(params['impedancePath'])
             self.impedance = f['impedanceMeasurements']
             self.display_impedance = True
@@ -37,39 +34,40 @@ class StreamWindow(QtGui.QWidget):
             self.impedance = None
             self.display_impedance = False
 
-        self.chip = params['chip']
         ymin = -6390
         ymax = 6390 
         self.deltay_uv = ymax - ymin
         self.refreshRate = params['refreshRate']
         self.deltax_ms = params['xrange']
 
-        self.hwif_request('setSubsamples_byChip', str(self.chip))
+        self.infoLabel = QtGui.QLabel()
+        self.infoLabel.setMaximumHeight(60)
 
-        ###############################
-        # stream buffers, timers, etc.
-        ###############################
+        #########################
+        # vispy plotting stuff
+        #########################
 
         sr = 30000  # sample rate
         frame_rate = self.refreshRate
         self.frame_period = 1000//frame_rate     # frame period, in ms
         self.nsamps = 30*self.deltax_ms   # number of samples to display
         self.nrefresh = sr//frame_rate   # new samples collected before refresh
-        self.plotBuff = np.zeros((32, self.nsamps), dtype='float')
-        self.plotBuff_raw = np.zeros((32, self.nsamps), dtype='float')
-        self.newBuff = np.zeros((32, self.nrefresh), dtype='float')
+
+        self.canvas = ChipCanvas(self.nsamps, self.nrefresh, ymin, ymax, parent=self)
+
+        self.plotBuff = np.zeros((nchans, self.nsamps), dtype='float')
+        self.plotBuff_raw = np.zeros((nchans, self.nsamps), dtype='float')
+        self.newBuff = np.zeros((nchans, self.nrefresh), dtype='float')
         self.draw_point = 0.0
+
+        self.initChip(params['chip'])
+
+        self.hwif_request('setSubsamples_byChip', str(self.chip))
 
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.updatePlot)
 
         self.proto2bytes_filename = os.path.abspath(proto2bytes_filename)
-
-        #########################
-        # vispy plotting stuff
-        #########################
-
-        self.canvas = ChipCanvas(self.nsamps, self.nrefresh, ymin, ymax, parent=self)
 
         ###################
         # Top-level stuff
@@ -141,7 +139,12 @@ class StreamWindow(QtGui.QWidget):
         if self.impedance != None:
             self.impedanceCheckbox = QtGui.QCheckBox('Display impedance')
             self.impedanceCheckbox.setCheckState(QtCore.Qt.Checked)
-            self.impedanceCheckbox.toggled.connect(self.toggleImpedance)
+            self.impedanceCheckbox.toggled.connect(self.toggleImpedanceLabels)
+
+            self.refCheckbox = QtGui.QCheckBox('Use software reference')
+            self.refCheckbox.setCheckState(QtCore.Qt.Unchecked)
+            self.refCheckbox.toggled.connect(self.toggleRef)
+        self.use_ref = False
 
         self.buttonPanel = QtGui.QWidget()
         buttonsLayout = QtGui.QHBoxLayout()
@@ -150,19 +153,18 @@ class StreamWindow(QtGui.QWidget):
         buttonsLayout.addWidget(self.chipSelection)
         buttonsLayout.addWidget(self.filterPanel)
         if self.impedance != None:
+            buttonsLayout.addWidget(self.refCheckbox)
             buttonsLayout.addWidget(self.impedanceCheckbox)
         self.buttonPanel.setLayout(buttonsLayout)
         self.buttonPanel.setMaximumHeight(150)
+
+        maxWidth = 800
         if self.impedance != None:
-            self.buttonPanel.setMaximumWidth(900)
-        else:
-            self.buttonPanel.setMaximumWidth(800)
+            maxWidth += 400
+        self.buttonPanel.setMaximumWidth(maxWidth)
 
         self.layout = QtGui.QVBoxLayout()
         self.layout.addWidget(self.buttonPanel)
-        self.infoLabel = QtGui.QLabel()
-        self.setInfoLabel(self.deltax_ms, self.deltay_uv)
-        self.infoLabel.setMaximumHeight(60)
         self.layout.addWidget(self.infoLabel)
         self.layout.addWidget(self.canvas.native)
 
@@ -171,13 +173,16 @@ class StreamWindow(QtGui.QWidget):
         self.setWindowTitle('Willow Live Streaming')
         self.setWindowIcon(QtGui.QIcon('../img/round_logo_60x60.png'))
 
-        self.canvas.draw_new_data(np.zeros((32, self.nsamps), dtype='float'), 
+        self.canvas.draw_new_data(np.zeros((nchans, self.nsamps), dtype='float'), 
                                   self.nsamps)
 
     def toggleFiltering(self, checkbox_state):
         self.filtering = checkbox_state
 
-    def toggleImpedance(self, checkbox_state):
+    def toggleRef(self, checkbox_state):
+        self.use_ref = checkbox_state
+
+    def toggleImpedanceLabels(self, checkbox_state):
         self.display_impedance = checkbox_state
         self.canvas.updateLabels()
         self.canvas.update()
@@ -244,24 +249,41 @@ class StreamWindow(QtGui.QWidget):
 
     def changeChip(self):
         chip = int(self.chipNumberLine.text())
-        self.chip = chip
         self.hwif_request('setSubsamples_byChip', str(self.chip))
         self.draw_point = 0.0
+        self.initChip(chip)
+
+    def initChip(self, chip):
+        self.chip = chip
+        if self.impedance != None:
+            self.bad_chans = np.array([c for c in range(nchans) if
+                self.impedanceBad(self.getImpedance(c+self.chip*nchans))])
+            self.impMask = np.zeros_like(self.plotBuff_raw)
+            self.impMask[self.bad_chans,:] = True
         self.canvas.updateLabels()
-        self.canvas.draw_new_data(np.zeros((32, self.nsamps), dtype='float'), 
+        self.canvas.draw_new_data(np.zeros((nchans, self.nsamps), dtype='float'), 
                                   self.nsamps)
         self.setInfoLabel(self.deltax_ms, self.deltay_uv)
 
+    def getImpedance(self, chan_idx):
+        return self.impedance[chan_idx]/1000.   # in kohms
+
+    def impedanceBad(self, impedance):
+        # tests whether an impedance, in kohms, is too high
+        # (indicating open-circuit channel)
+        return impedance > 1000. or impedance < 100.
+
+
     def updatePlot(self):
-        # 32 channels of 2-byte data, gathered over self.nrefresh samples
-        size_data = 2*32*self.nrefresh
+        # nchans channels of 2-byte data, gathered over self.nrefresh samples
+        size_data = 2*nchans*self.nrefresh
         new_data_string = self.proto2bytes_po.stdout.read(size_data)
         try:
             # assumes daemon running on a little-endian system
             # (true of x86, amd64, but not of some other processors)
-            new_data = struct.unpack('<'+'H'*32*self.nrefresh, new_data_string)
+            new_data = struct.unpack('<'+'H'*nchans*self.nrefresh, new_data_string)
             for i in xrange(self.nrefresh):
-                self.newBuff[:,i] = (np.array(new_data[i*32:(i+1)*32], dtype='float')-2**15)*MICROVOLTS_PER_COUNT
+                self.newBuff[:,i] = (np.array(new_data[i*nchans:(i+1)*nchans], dtype='float')-2**15)*MICROVOLTS_PER_COUNT
 
             if self.draw_point == 0:
                 self.plotBuff_raw = np.concatenate((self.newBuff[:,:],
@@ -280,11 +302,27 @@ class StreamWindow(QtGui.QWidget):
                     self.plotBuff_raw[:,self.draw_point+self.nrefresh:]),1)
                 last_point = self.draw_point + self.nrefresh
 
-            if self.filtering:
-                b, a = self.getFilter()
-                self.plotBuff = signal.filtfilt(b, a, self.plotBuff_raw, axis=1)
+            ########
+            # post-processing
+            #####
+
+            if self.use_ref:
+                m_plotBuff = np.ma.masked_array(self.plotBuff_raw, self.impMask)
+                mean = np.ma.mean(m_plotBuff, axis=0)
+                if np.ma.is_masked(mean):
+                    # if all channels to display were bad
+                    self.plotBuff = self.plotBuff_raw
+                else:
+                    # subtract mean data from good channels (leave bad channels)
+                    good_chans = [c for c in range(nchans) if c not in self.bad_chans]
+                    self.plotBuff[good_chans,:] = self.plotBuff_raw[good_chans,:] - mean
+                    self.plotBuff[self.bad_chans,:] = self.plotBuff_raw[self.bad_chans,:]
             else:
                 self.plotBuff = self.plotBuff_raw
+
+            if self.filtering:
+                b, a = self.getFilter()
+                self.plotBuff = signal.filtfilt(b, a, self.plotBuff, axis=1)
 
             self.canvas.draw_new_data(self.plotBuff, last_point)
             self.draw_point += self.nrefresh
@@ -439,7 +477,6 @@ class ChipCanvas(app.Canvas):
                        blend_func=('src_alpha', 'one_minus_src_alpha'))
 
         self.createBorders()
-        self.createLabels()
         self.show()
 
     def createBorders(self):
@@ -476,55 +513,32 @@ class ChipCanvas(app.Canvas):
         self.border_collection['color'] = (1.0, 1.0, 1.0, 1.0)
 
     def createLabels(self):
-        texts = []
-        poses = []
-        a = (self.physical_size[0]/ncols, self.physical_size[1]/nrows)
-        font_size = 8
-        for (x,y) in self.subplot_indices:
-            chan_idx = y*ncols + x + 32*self.parent.chip
-            texts.append(' Channel {c}'.format(c=chan_idx))
-            poses.append((a[0]*x, a[1]*(y+0.125)))
-            if self.parent.display_impedance:
-                impedance = self.getImpedance(chan_idx)
-                impedance_label = u' Impedance: {i:,.2f} k\N{OHM SIGN}'.format(i=impedance)
-                if self.impedanceBad(impedance):
-                    impedance_label += ' (BAD)'
-                texts.append(impedance_label)
-                poses.append((a[0]*x, a[1]*(y+0.875)))
-        self.label_visual = visuals.TextVisual(text=texts, 
-            color=(0.5,0.5,0.5,1.0), font_size=font_size, 
-            pos=poses, anchor_x='left')
+        self.label_visual = visuals.TextVisual(text='',
+            color=(0.5,0.5,0.5,1.0), font_size=8, pos=(0,0), anchor_x='left')
         self.label_visual.transform = transforms.NullTransform()
+        self.updateLabels()
 
     def updateLabels(self):
-        try:
+        if self.label_visual != None:
             texts = []
             poses = []
             a = (self.physical_size[0]/ncols, self.physical_size[1]/nrows)
             font_size = 8
             for (x,y) in self.subplot_indices:
-                chan_idx = y*ncols + x + 32*self.parent.chip
+                chan_idx = y*ncols + x + nchans*self.parent.chip
                 texts.append(' Channel {c}'.format(c=chan_idx))
                 poses.append((a[0]*x, a[1]*(y+0.125)))
                 if self.parent.display_impedance:
-                    impedance = self.getImpedance(chan_idx)
+                    impedance = self.parent.getImpedance(chan_idx)
                     impedance_label = u' Impedance: {i:,.2f} k\N{OHM SIGN}'.format(i=impedance)
-                    if self.impedanceBad(impedance):
+                    if self.parent.impedanceBad(impedance):
                         impedance_label += ' (BAD)'
                     texts.append(impedance_label)
                     poses.append((a[0]*x, a[1]*(y+0.875)))
             self.label_visual.text = texts
             self.label_visual.pos  = poses
-        except:
+        else:
             self.createLabels()
-
-    def getImpedance(self, chan_idx):
-        return self.parent.impedance[chan_idx]/1000.   # in kohms
-
-    def impedanceBad(self, impedance):
-        # tests whether an impedance, in kohms, is too high
-        # (indicating open-circuit channel)
-        return impedance > 1000.
 
     def focusPlots(self):
         if self.selected_plots != []:
@@ -532,9 +546,9 @@ class ChipCanvas(app.Canvas):
             unfocused_color = np.append(((0.75/0.855)*self.default_rgb), 1.0)
             bad_impedance_color = np.append(self.bad_impedance_rgb, 1.0)
             for (x,y) in self.subplot_indices:
-                chan_idx = y*ncols + x + 32*self.parent.chip
+                chan_idx = y*ncols + x + nchans*self.parent.chip
                 plot_idx = y*ncols + x
-                if self.parent.display_impedance and self.impedanceBad(self.getImpedance(chan_idx)):
+                if self.parent.display_impedance and self.parent.impedanceBad(self.parent.getImpedance(chan_idx)):
                     self._program['u_colors[{C}]'.format(C=plot_idx)] = bad_impedance_color
                 else:
                     self._program['u_colors[{C}]'.format(C=plot_idx)] = unfocused_color
@@ -549,14 +563,14 @@ class ChipCanvas(app.Canvas):
             default_color = np.append(self.default_rgb, 1.0)
             bad_impedance_color = np.append(self.bad_impedance_rgb, 1.0)
             for (x,y) in self.subplot_indices:
-                chan_idx = y*ncols + x + 32*self.parent.chip
+                chan_idx = y*ncols + x + nchans*self.parent.chip
                 plot_idx = y*ncols + x
-                if self.parent.display_impedance and self.impedanceBad(self.getImpedance(chan_idx)):
+                if self.parent.display_impedance and self.parent.impedanceBad(self.parent.getImpedance(chan_idx)):
                     self._program['u_colors[{C}]'.format(C=plot_idx)] = bad_impedance_color
                 else:
                     self._program['u_colors[{C}]'.format(C=plot_idx)] = default_color
 
-    # used by parent widget. new_yvals comes in as an array with shape (32, nsamps)
+    # used by parent widget. new_yvals comes in as an array with shape (nchans, nsamps)
     def draw_new_data(self, new_yvals, latest_point):
         for chan in xrange(ncols*nrows):
             self.repacked_yvals[chan//ncols, chan%ncols,:] = new_yvals[chan,:]
