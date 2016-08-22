@@ -444,7 +444,7 @@ class ChipCanvas(app.Canvas):
         self._program.bind(gloo.VertexBuffer(vertex_data))
 
         # a_position field will be yvals of subplots, in uVolts
-        self.repacked_yvals = np.zeros((nrows, ncols, self.nsamps), np.float32)
+        self.repacked_yvals = np.zeros((ncols, nrows, self.nsamps), np.float32)
         self._program['a_position'] = self.repacked_yvals.ravel()
 
         self._program['u_latest_point'] = self.nrefresh
@@ -573,7 +573,7 @@ class ChipCanvas(app.Canvas):
     # used by parent widget. new_yvals comes in as an array with shape (nchans, nsamps)
     def draw_new_data(self, new_yvals, latest_point):
         for chan in xrange(ncols*nrows):
-            self.repacked_yvals[chan//ncols, chan%ncols,:] = new_yvals[chan,:]
+            self.repacked_yvals[chan%ncols, chan//ncols,:] = new_yvals[chan,:]
         self._program['a_position'] = self.repacked_yvals.ravel().astype(np.float32)
         self._program['u_latest_point'] = latest_point
         self.focusPlots()
