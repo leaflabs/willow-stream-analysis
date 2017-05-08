@@ -309,55 +309,57 @@ class StreamWindow(QtGui.QWidget):
             # assumes daemon running on a little-endian system
             # (true of x86, amd64, but not of some other processors)
             new_data = struct.unpack('<'+'H'*nchans*self.nrefresh, new_data_string)
-            for i in xrange(self.nrefresh):
-                self.newBuff[:,i] = (np.array(new_data[i*nchans:(i+1)*nchans], dtype='float')-2**15)*MICROVOLTS_PER_COUNT
-
-            if self.draw_point == 0:
-                self.plotBuff_raw = np.concatenate((self.newBuff[:,:],
-                    self.plotBuff_raw[:,self.nrefresh:]),1)
-                last_point = self.draw_point + self.nrefresh
-            elif self.draw_point + self.nrefresh > self.nsamps:
-                # overflow of new buffer back to beginning of plot
-                overflow_amount = self.draw_point + self.nrefresh - self.nsamps
-                self.plotBuff_raw = np.concatenate((self.newBuff[:,-overflow_amount:],
-                    self.plotBuff_raw[:,overflow_amount:self.draw_point],
-                    self.newBuff[:,:self.nrefresh-overflow_amount]),1)
-                last_point = overflow_amt
-            else:
-                self.plotBuff_raw = np.concatenate((self.plotBuff_raw[:,:self.draw_point],
-                    self.newBuff[:,:],
-                    self.plotBuff_raw[:,self.draw_point+self.nrefresh:]),1)
-                last_point = self.draw_point + self.nrefresh
-
-            ########
-            # post-processing
-            #####
-
-            if self.use_ref:
-                m_plotBuff = np.ma.masked_array(self.plotBuff_raw, self.impMask)
-                mean = np.ma.mean(m_plotBuff, axis=0)
-                if np.ma.is_masked(mean):
-                    # if all channels to display were bad
-                    self.plotBuff = self.plotBuff_raw
-                else:
-                    # subtract mean data from good channels (leave bad channels)
-                    good_chans = [c for c in range(nchans) if c not in self.bad_chans]
-                    self.plotBuff[good_chans,:] = self.plotBuff_raw[good_chans,:] - mean
-                    self.plotBuff[self.bad_chans,:] = self.plotBuff_raw[self.bad_chans,:]
-            else:
-                self.plotBuff = self.plotBuff_raw
-
-            if self.filtering:
-                b, a = self.getFilter()
-                self.plotBuff = signal.filtfilt(b, a, self.plotBuff, axis=1)
-
-            self.canvas.draw_new_data(self.plotBuff, last_point)
-            self.draw_point += self.nrefresh
-            self.draw_point %= self.plotBuff.shape[1]
-        except Exception as e:
-            print e
-            print 'Read from proto2bytes failed!'
+        except (struct.error, TypeError) as e:
+            sys.stderr.write('\n' + e + '\n')
+            sys.stderr.write('Read from proto2bytes failed!\n')
             self.stopStreaming()
+            return
+
+        for i in xrange(self.nrefresh):
+            self.newBuff[:,i] = (np.array(new_data[i*nchans:(i+1)*nchans], dtype='float')-2**15)*MICROVOLTS_PER_COUNT
+
+        if self.draw_point == 0:
+            self.plotBuff_raw = np.concatenate((self.newBuff[:,:],
+                self.plotBuff_raw[:,self.nrefresh:]),1)
+            last_point = self.draw_point + self.nrefresh
+        elif self.draw_point + self.nrefresh > self.nsamps:
+            # overflow of new buffer back to beginning of plot
+            overflow_amount = self.draw_point + self.nrefresh - self.nsamps
+            self.plotBuff_raw = np.concatenate((self.newBuff[:,-overflow_amount:],
+                self.plotBuff_raw[:,overflow_amount:self.draw_point],
+                self.newBuff[:,:self.nrefresh-overflow_amount]),1)
+            last_point = overflow_amt
+        else:
+            self.plotBuff_raw = np.concatenate((self.plotBuff_raw[:,:self.draw_point],
+                self.newBuff[:,:],
+                self.plotBuff_raw[:,self.draw_point+self.nrefresh:]),1)
+            last_point = self.draw_point + self.nrefresh
+
+        ########
+        # post-processing
+        #####
+
+        if self.use_ref:
+            m_plotBuff = np.ma.masked_array(self.plotBuff_raw, self.impMask)
+            mean = np.ma.mean(m_plotBuff, axis=0)
+            if np.ma.is_masked(mean):
+                # if all channels to display were bad
+                self.plotBuff = self.plotBuff_raw
+            else:
+                # subtract mean data from good channels (leave bad channels)
+                good_chans = [c for c in range(nchans) if c not in self.bad_chans]
+                self.plotBuff[good_chans,:] = self.plotBuff_raw[good_chans,:] - mean
+                self.plotBuff[self.bad_chans,:] = self.plotBuff_raw[self.bad_chans,:]
+        else:
+            self.plotBuff = self.plotBuff_raw
+
+        if self.filtering:
+            b, a = self.getFilter()
+            self.plotBuff = signal.filtfilt(b, a, self.plotBuff, axis=1)
+
+        self.canvas.draw_new_data(self.plotBuff, last_point)
+        self.draw_point += self.nrefresh
+        self.draw_point %= self.plotBuff.shape[1]
 
 VERT_SHADER = """
 #version 120
