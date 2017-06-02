@@ -72,14 +72,22 @@ class StreamWindow(QtGui.QWidget):
         self.nsamps = 30*self.deltax_ms   # number of samples to display
         self.nrefresh = sr//frame_rate   # new samples collected before refresh
 
-        self.canvas = ChipCanvas(self.nsamps, self.nrefresh, ymin, ymax, parent=self)
+        # apparently, the smoothest way to switch display between fullscreen and
+        # not-fullscreen is just to do all the work both ways all the time.
+        self.canvas_embedded = ChipCanvas(self.nsamps, self.nrefresh, ymin, ymax, self, parent=self)
+        self.canvas_popout = ChipCanvas(self.nsamps, self.nrefresh, ymin, ymax, self, parent=None)
+
+        self.initChip(params['chip'])
+        self.canvas_embedded.native.show()
+        # makes SEEKRIT SPEEDZ when opening fullscreen first time
+        # this is mostly only helpful on crappy computers
+        self.canvas_popout.native.showFullScreen()
 
         self.plotBuff = np.zeros((nchans, self.nsamps), dtype='float')
         self.plotBuff_raw = np.zeros((nchans, self.nsamps), dtype='float')
         self.newBuff = np.zeros((nchans, self.nrefresh), dtype='float')
         self.draw_point = 0
 
-        self.initChip(params['chip'])
 
         self.hwif_request('setSubsamples_byChip', str(self.chip))
 
@@ -199,13 +207,20 @@ class StreamWindow(QtGui.QWidget):
         self.layout = QtGui.QVBoxLayout()
         self.layout.addWidget(self.buttonPanel)
         self.layout.addWidget(self.labels)
-        self.layout.addWidget(self.canvas.native)
+        self.layout.addWidget(self.canvas_embedded.native)
 
         self.setLayout(self.layout)
 
         self.setWindowTitle('Willow Live Streaming')
         self.setWindowIcon(QtGui.QIcon('../img/round_logo_60x60.png'))
 
+        self.canvas_popout.native.hide()
+
+    def canvasesApply(self, function, *args, **kwargs):
+        embedded_args = (self.canvas_embedded,) + args
+        function(*embedded_args, **kwargs)
+        popout_args = (self.canvas_popout,) + args
+        function(*popout_args, **kwargs)
 
     def toggleFiltering(self, checkbox_state):
         self.filtering = checkbox_state
@@ -215,8 +230,8 @@ class StreamWindow(QtGui.QWidget):
 
     def toggleImpedanceLabels(self, checkbox_state):
         self.display_impedance = checkbox_state
-        self.canvas.updateLabels()
-        self.canvas.update()
+        self.canvasesApply(ChipCanvas.updateLabels)
+        self.canvasesApply(ChipCanvas.update)
 
     def setLowcut(self):
         self.lowcut = float(self.lowcutLine.text())
@@ -310,9 +325,11 @@ class StreamWindow(QtGui.QWidget):
                 self.impedanceBad(self.getImpedance(c+self.chip*nchans))])
             self.impMask = np.zeros_like(self.plotBuff_raw)
             self.impMask[self.bad_chans,:] = True
-        self.canvas.updateLabels()
-        self.canvas.draw_new_data(np.zeros((nchans, self.nsamps), dtype='float'),
-                                  self.nsamps)
+        self.canvasesApply(ChipCanvas.updateLabels)
+        self.canvasesApply(ChipCanvas.update)
+        self.canvasesApply(ChipCanvas.draw_new_data, np.zeros((nchans, self.nsamps), dtype='float'),
+                        self.nsamps)
+
         self.setInfoLabel(self.deltax_ms, self.deltay_uv)
 
     def getImpedance(self, chan_idx):
@@ -380,9 +397,20 @@ class StreamWindow(QtGui.QWidget):
             b, a = self.getFilter()
             self.plotBuff = signal.filtfilt(b, a, self.plotBuff, axis=1)
 
-        self.canvas.draw_new_data(self.plotBuff, last_point)
+        self.canvasesApply(ChipCanvas.draw_new_data, self.plotBuff, last_point)
         self.draw_point += self.nrefresh
         self.draw_point %= self.plotBuff.shape[1]
+
+    def popoutCanvas(self):
+        self.canvas_popout.native.showFullScreen()
+
+    def popinCanvas(self):
+        self.canvas_popout.native.hide()
+
+    def onClose(self, event):
+        self.canvas_popout.native.hide()
+        self.canvas_popout.native.close()
+        self.canvas_popout.close()
 
 VERT_SHADER = """
 #version 120
@@ -474,13 +502,14 @@ void main() {
 
 class ChipCanvas(app.Canvas):
 
-    def __init__(self, nsamps, nrefresh, ymin, ymax, parent=None):
+    def __init__(self, nsamps, nrefresh, ymin, ymax, ctl_panel, parent=None):
+        super(ChipCanvas, self).__init__(app='pyqt4', keys=None, parent=parent)
 
-        self.parent = parent
+        self.ctl_panel = ctl_panel
+        self.parent = parent        # if is None, canvas in own window. if is ctl_panel, canvas embedded.
         self.nrefresh = nrefresh
         self.nsamps = nsamps
-        self.ymin = ymin
-        self.ymax = ymax
+        self.deltay_uv = ymax - ymin
 
         vertex_data = np.zeros((ncols, nrows, self.nsamps),
             dtype=[('a_index', np.float32, 3)])
@@ -492,24 +521,32 @@ class ChipCanvas(app.Canvas):
             itertools.product(xrange(ncols),xrange(nrows),xrange(self.nsamps)))
         for (x,y,i) in point_indices:
             vertex_data['a_index'][x,y,i] = np.array([x,y,i])
+
         self._program = gloo.Program(VERT_SHADER, FRAG_SHADER)
         self._program.bind(gloo.VertexBuffer(vertex_data))
 
         # a_position field will be yvals of subplots, in uVolts
         self.repacked_yvals = np.zeros((ncols, nrows, self.nsamps), np.float32)
+
         self._program['a_position'] = self.repacked_yvals.ravel()
 
         self._program['u_latest_point'] = self.nrefresh
-        self._program['u_yrange'] = (self.ymin, self.ymax)
-        self._program['u_scale'] = (1., 1.)
+        self._program['u_yrange'] = (ymin, ymax)
+        self.scale_x = 1.
+        self.scale_y = 1.
+        self._program['u_scale'] = (self.scale_x, self.scale_y)
+
         self.real_scale = (int(10 * round(float(self.nsamps/(30*1.))/10)),
-                           int(10 * round(float(self.parent.deltay_uv/1.)/10)))
+                           int(10 * round(float(self.deltay_uv/1.)/10)))
+
         self._program['u_nsamps'] = self.nsamps
+
         self.default_rgb = np.array((0.559, 0.855, 0.563))
-        default_rgba = np.append(self.default_rgb, 1.0)
         self.bad_impedance_rgb = np.array((0.5, 0.5, 0.5))
         self.subplot_indices = set((x,y) for x,y in \
             itertools.product(xrange(ncols),xrange(nrows)))
+
+        default_rgba = np.append(self.default_rgb, 1.0)
         for (x,y) in self.subplot_indices:
             chan_idx = y*ncols + x
             self._program['u_colors[{CI}]'.format(CI=chan_idx)] = default_rgba
@@ -527,15 +564,15 @@ class ChipCanvas(app.Canvas):
         self.axis_y = None
         self.show_axis = False
 
-        super(ChipCanvas, self).__init__(app='pyqt4', keys='interactive', parent=parent)
-
         gloo.set_viewport(0, 0, *self.physical_size)
 
         gloo.set_state(clear_color=(0.10, 0.10, 0.10, 1.0), blend=True,
                        blend_func=('src_alpha', 'one_minus_src_alpha'))
 
         self.createBorders()
-        self.show()
+
+    def hasParent(self):
+        return (self.parent is not None)
 
     def createBorders(self):
         plot_w = 2.0/ncols
@@ -573,10 +610,10 @@ class ChipCanvas(app.Canvas):
     def reportLocation(self, plot):
         if plot != None:
             plot_x, plot_y = plot
-            chan_idx = plot_y*ncols + plot_x + nchans*self.parent.chip
-            self.parent.setPlotLabel(chan_idx)
+            chan_idx = plot_y*ncols + plot_x + nchans*self.ctl_panel.chip
+            self.ctl_panel.setPlotLabel(chan_idx)
         else:
-            self.parent.setPlotLabel(None)
+            self.ctl_panel.setPlotLabel(None)
 
     def createLabels(self):
         self.label_visual = visuals.TextVisual(text='',
@@ -585,19 +622,18 @@ class ChipCanvas(app.Canvas):
         self.updateLabels()
 
     def updateLabels(self):
-        if self.label_visual != None:
+        if self.label_visual is not None:
             texts = []
             poses = []
             a = (self.physical_size[0]/ncols, self.physical_size[1]/nrows)
-            font_size = 8
             for (x,y) in self.subplot_indices:
-                chan_idx = y*ncols + x + nchans*self.parent.chip
+                chan_idx = y*ncols + x + nchans*self.ctl_panel.chip
                 texts.append(' Channel {c}'.format(c=chan_idx))
                 poses.append((a[0]*x, a[1]*(y+0.125)))
-                if self.parent.display_impedance:
-                    impedance = self.parent.getImpedance(chan_idx)
+                if self.ctl_panel.display_impedance:
+                    impedance = self.ctl_panel.getImpedance(chan_idx)
                     impedance_label = u' Impedance: {i:,.2f} k\N{OHM SIGN}'.format(i=impedance)
-                    if self.parent.impedanceBad(impedance):
+                    if self.ctl_panel.impedanceBad(impedance):
                         impedance_label += ' (BAD)'
                     texts.append(impedance_label)
                     poses.append((a[0]*x, a[1]*(y+0.875)))
@@ -656,9 +692,9 @@ class ChipCanvas(app.Canvas):
             unfocused_color = np.append(((0.75/0.855)*self.default_rgb), 1.0)
             bad_impedance_color = np.append(self.bad_impedance_rgb, 1.0)
             for (x,y) in self.subplot_indices:
-                chan_idx = y*ncols + x + nchans*self.parent.chip
+                chan_idx = y*ncols + x + nchans*self.ctl_panel.chip
                 plot_idx = y*ncols + x
-                if self.parent.display_impedance and self.parent.impedanceBad(self.parent.getImpedance(chan_idx)):
+                if self.ctl_panel.display_impedance and self.ctl_panel.impedanceBad(self.ctl_panel.getImpedance(chan_idx)):
                     self._program['u_colors[{C}]'.format(C=plot_idx)] = bad_impedance_color
                 else:
                     self._program['u_colors[{C}]'.format(C=plot_idx)] = unfocused_color
@@ -673,9 +709,9 @@ class ChipCanvas(app.Canvas):
             default_color = np.append(self.default_rgb, 1.0)
             bad_impedance_color = np.append(self.bad_impedance_rgb, 1.0)
             for (x,y) in self.subplot_indices:
-                chan_idx = y*ncols + x + nchans*self.parent.chip
+                chan_idx = y*ncols + x + nchans*self.ctl_panel.chip
                 plot_idx = y*ncols + x
-                if self.parent.display_impedance and self.parent.impedanceBad(self.parent.getImpedance(chan_idx)):
+                if self.ctl_panel.display_impedance and self.ctl_panel.impedanceBad(self.ctl_panel.getImpedance(chan_idx)):
                     self._program['u_colors[{C}]'.format(C=plot_idx)] = bad_impedance_color
                 else:
                     self._program['u_colors[{C}]'.format(C=plot_idx)] = default_color
@@ -708,13 +744,12 @@ class ChipCanvas(app.Canvas):
 
     def on_mouse_wheel(self, event):
         d = np.sign(event.delta[1]) * .05
-        scale_x, scale_y = self._program['u_scale']
         if 'Shift' in event.modifiers:
-            scale_x_new, scale_y_new = (max(1, scale_x*np.exp(0.0*d)),
-                                        max(1, scale_y*np.exp(2.5*d)))
+            self.scale_x, self.scale_y = (max(1, self.scale_x*np.exp(0.0*d)),
+                                          max(1, self.scale_y*np.exp(2.5*d)))
         elif 'Control' in event.modifiers:
-            scale_x_new, scale_y_new = (max(1, scale_x*np.exp(2.5*d)),
-                                        max(1, scale_y*np.exp(0.0*d)))
+            self.scale_x, self.scale_y = (max(1, self.scale_x*np.exp(2.5*d)),
+                                          max(1, self.scale_y*np.exp(0.0*d)))
         else:
             return
 
@@ -725,24 +760,24 @@ class ChipCanvas(app.Canvas):
         self.clearAxis()
 
         # constrain scale factors
-        range_x_new = self.nsamps/(30*scale_x_new)
-        if range_x_new < self.parent.frame_period:
-            range_x_new = self.parent.frame_period
-            scale_x_new = self.nsamps/(30*range_x_new)
-        range_y_new = self.parent.deltay_uv/scale_y_new
+        range_x_new = self.nsamps/(30*self.scale_x)
+        if range_x_new < self.ctl_panel.frame_period:
+            range_x_new = self.ctl_panel.frame_period
+            self.scale_x = self.nsamps/(30*range_x_new)
+        range_y_new = self.deltay_uv/self.scale_y
         if range_y_new < MICROVOLTS_PER_COUNT:
             range_y_new = MICROVOLTS_PER_COUNT
-            scale_y_new = self.parent.deltay_uv/range_y_new
+            self.scale_y = self.deltay_uv/range_y_new
 
-        self._program['u_scale'] = (scale_x_new, scale_y_new)
+        self._program['u_scale'] = (self.scale_x, self.scale_y)
 
         # round new scales to the nearest 10 uV for cleanliness
-        scale_x_real = int(10 * round(float(self.nsamps/(30*scale_x_new))/10)) 
-        scale_y_real = int(10 * round(float(self.parent.deltay_uv/scale_y_new)/10)) 
+        scale_x_real = int(10 * round(float(self.nsamps/(30*self.scale_x))/10))
+        scale_y_real = int(10 * round(float(self.deltay_uv/self.scale_y)/10))
 
-        self.real_scale = (scale_x_new, scale_y_new)
+        self.real_scale = (self.scale_x, self.scale_y)
 
-        self.parent.setInfoLabel(scale_x_real, scale_y_real)
+        self.ctl_panel.setInfoLabel(scale_x_real, scale_y_real)
 
         self.update()
 
@@ -786,6 +821,12 @@ class ChipCanvas(app.Canvas):
             else:
                 self.createAxis(self.selected_plots[-1])
                 self.update()
+        elif (not self.hasParent()) and (event.key.name == 'Escape' or event.key.name == 'F11'):
+            self.ctl_panel.popinCanvas()
+        elif (self.hasParent()) and event.key.name == 'F11':
+            self.ctl_panel.popoutCanvas()
+        elif event.key.name == 'Escape':
+            pass    # if we didn't do this, Esc would close the embedded canvas
 
 if __name__=='__main__':
     from StreamDialog import StreamDialog
