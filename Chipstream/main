@@ -110,6 +110,8 @@ class StreamWindow(QtGui.QWidget):
         self.stopButton.setIconSize(QtCore.QSize(25,25))
         self.stopButton.clicked.connect(self.stopStreaming)
 
+        self.streaming = False
+
         self.filterCheckbox = QtGui.QCheckBox('Filtering displayed data')
         self.filterCheckbox.setCheckState(QtCore.Qt.Unchecked)
         self.filtering = False
@@ -251,11 +253,19 @@ class StreamWindow(QtGui.QWidget):
 
     def startStreaming(self):
         self.hwif_request('startStreaming_subsamples')
+        self.streaming = True
         self.toggleStdin(True)
 
     def stopStreaming(self):
         self.hwif_request('stopStreaming')
+        self.streaming = False
         self.toggleStdin(False)
+
+    def playPause(self):
+        if self.streaming:
+            self.stopStreaming()
+        else:
+            self.startStreaming()
 
     def toggleStdin(self, enable):
         if enable:
@@ -827,6 +837,8 @@ class ChipCanvas(app.Canvas):
             self.ctl_panel.popoutCanvas()
         elif event.key.name == 'Escape':
             pass    # if we didn't do this, Esc would close the embedded canvas
+        elif event.key.name == 'Space':
+            self.ctl_panel.playPause()
 
 if __name__=='__main__':
     from StreamDialog import StreamDialog
