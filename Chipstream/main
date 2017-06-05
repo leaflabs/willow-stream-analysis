@@ -775,11 +775,8 @@ class ChipCanvas(app.Canvas):
 
     def on_key_press(self, event):
         # 'a' key toggles axis display on most recently selected plot
-        print event.key.name
         if event.key.name == 'A' and self.selected_plots != []:
-            print 'handling a press'
             self.show_axis = not self.show_axis
-            print self.show_axis
             if self.show_axis == False:
                 #self.clearAxis()
                 self.axis_plot = None
