@@ -206,8 +206,6 @@ class StreamWindow(QtGui.QWidget):
         self.setWindowTitle('Willow Live Streaming')
         self.setWindowIcon(QtGui.QIcon('../img/round_logo_60x60.png'))
 
-        self.canvas.draw_new_data(np.zeros((nchans, self.nsamps), dtype='float'),
-                                  self.nsamps)
 
     def toggleFiltering(self, checkbox_state):
         self.filtering = checkbox_state
