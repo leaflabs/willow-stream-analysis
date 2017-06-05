@@ -24,6 +24,7 @@ MICROVOLTS_PER_COUNT = 0.195
 
 MIN_CHIP_NUMBER = 0
 MAX_CHIP_NUMBER = 31    # Willows can have at most chips 0 - 31 active at once.
+LABEL_HEIGHT = 60       # it looks fine for a line of text to be this tall
 
 class StreamWindow(QtGui.QWidget):
 
@@ -52,13 +53,12 @@ class StreamWindow(QtGui.QWidget):
 
         self.labels = QtGui.QWidget()
         self.infoLabel = QtGui.QLabel()
-        self.infoLabel.setMaximumHeight(60)
-        if self.probeMap != None:
-            self.plotLabel = QtGui.QLabel()
-            self.plotLabel.setMaximumHeight(60)
         self.labelLayout = QtGui.QHBoxLayout()
         self.labelLayout.addWidget(self.infoLabel)
-        if self.probeMap != None:
+        self.labels.setMaximumHeight(2*LABEL_HEIGHT)    # label is 2 lines tall
+        if self.probeMap is not None:
+            self.plotLabel = QtGui.QLabel()
+            self.labels.setMaximumHeight(4*LABEL_HEIGHT)    # 2 more lines tall
             self.labelLayout.addWidget(self.plotLabel)
         self.labels.setLayout(self.labelLayout)
 
