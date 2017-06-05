@@ -675,8 +675,8 @@ class ChipCanvas(app.Canvas):
 
         #time_visible  = self.real_scale[0]    # in ms
         #time_0 , time_1 = 0.0, time_visible
-        #self.axis_x = visuals.AxisVisual(pos_xax, 
-        #    domain=(time_0, time_1), tick_direction=(0., 1.), 
+        #self.axis_x = visuals.AxisVisual(pos_xax,
+        #    domain=(time_0, time_1), tick_direction=(0., 1.),
         #    axis_color=(0.5,0.5,0.5), tick_color=(0.4,0.4,0.4))
 
         pos_yax = np.array([[plot_w*(plot_x+1-x_margin),
@@ -686,7 +686,7 @@ class ChipCanvas(app.Canvas):
         pos_yax *= np.array([self.physical_size[0], self.physical_size[1]])
 
         uVolts_0, uVolts_1 = (self.real_scale[1], -self.real_scale[1])
-        self.axis_y = visuals.AxisVisual(pos_yax, 
+        self.axis_y = visuals.AxisVisual(pos_yax,
             domain=(uVolts_0, uVolts_1), tick_direction=(-1., 0.),
             axis_color=(0.5,0.5,0.5), tick_color=(0.4,0.4,0.4))
 
