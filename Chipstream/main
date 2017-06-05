@@ -312,15 +312,15 @@ class StreamWindow(QtGui.QWidget):
             warnings.filterwarnings('default')
             return 1, 1
 
-     def incrementChip(self):
-         chip = min(self.chip + 1, MAX_CHIP_NUMBER)
-         self.chipNumberLine.setText(str(chip))
-         self.changeChip()
+    def incrementChip(self):
+        chip = min(self.chip + 1, MAX_CHIP_NUMBER)
+        self.chipNumberLine.setText(str(chip))
+        self.changeChip()
 
-     def decrementChip(self):
-         chip = max(self.chip - 1, MIN_CHIP_NUMBER)
-         self.chipNumberLine.setText(str(chip))
-         self.changeChip()
+    def decrementChip(self):
+        chip = max(self.chip - 1, MIN_CHIP_NUMBER)
+        self.chipNumberLine.setText(str(chip))
+        self.changeChip()
 
     def changeChip(self):
         chip = int(self.chipNumberLine.text())
