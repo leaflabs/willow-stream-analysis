@@ -19,6 +19,23 @@ the same folder alongside the exectuable. stdout and stderr will be piped to
 "oFile" and "eFile" in the working directory, so avoid using these filenames
 for metadata, as they will get overwritten upon execution.
 
+# Chipstream widget
+
+The only streaming application currently included in this repository is the
+Chipstream application, which displays live streaming data from the 32 channels
+on a single ADC chip on a Willow headstage. It has some dependencies on
+libraries not required to use the WillowGUI, namely:
+
+- matplotlib
+- vispy version 0.5 (still unreleased as of 05/30/2017; please build from source
+  https://github.com/vispy/vispy)
+
+and some dependencies shared with WillowGUI, namely:
+
+- h5py
+- scipy
+- numpy
+
 # Datanode transactions
 
 Streaming analysis programs will need to be able to conduct some types of
