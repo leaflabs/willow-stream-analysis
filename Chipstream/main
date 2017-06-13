@@ -221,8 +221,11 @@ class StreamWindow(QtGui.QWidget):
     def canvasesApply(self, function, *args, **kwargs):
         embedded_args = (self.canvas_embedded,) + args
         function(*embedded_args, **kwargs)
-        popout_args = (self.canvas_popout,) + args
-        function(*popout_args, **kwargs)
+        # avoid updating canvas_popout widget while hidden to bound memory use
+        if (self.canvas_popout.native.isVisible() or
+            function != ChipCanvas.draw_new_data):
+            popout_args = (self.canvas_popout,) + args
+            function(*popout_args, **kwargs)
 
     def toggleFiltering(self, checkbox_state):
         self.filtering = checkbox_state
