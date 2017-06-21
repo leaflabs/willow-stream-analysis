@@ -21,10 +21,9 @@ for metadata, as they will get overwritten upon execution.
 
 # Chipstream widget
 
-The only streaming application currently included in this repository is the
-Chipstream application, which displays live streaming data from the 32 channels
-on a single ADC chip on a Willow headstage. It has some dependencies on
-libraries not required to use the WillowGUI, namely:
+Chipstream displays live streaming data from the 32 channels on a single ADC
+chip on a Willow headstage. It has some dependencies on libraries not required
+to use the WillowGUI, namely:
 
 - matplotlib
 - vispy version 0.5 (still unreleased as of 05/30/2017; please build from source
@@ -35,6 +34,25 @@ and some dependencies shared with WillowGUI, namely:
 - h5py
 - scipy
 - numpy
+
+# Sonifier widget
+
+Sonifier performs sonification of a selectable datanode channel.
+Sonifier is constructed in C using GTK 3.0, glib, and PulseAudio's
+"simple" API, and relies on the availability of willow-daemon's
+proto2bytes utility.
+
+Sonifier has some dependencies not shared with WillowGUI, namely:
+
+- sudo apt-get install libpulse-dev libgtk-3-dev
+
+and "make" must be run in the Sonifier subdirectory to create
+the executable main from the source file main.c.
+
+When the "Start" Button is pressed, main Sonifies (plays) the
+specified datanode channel as audio to the system default audio
+output, and when the Stop button is pressed after Start, audio
+output stops.
 
 # Datanode transactions
 
