@@ -53,6 +53,13 @@
 #define CHANNEL_SPIN_CLIMB_RATE   1.0
 #define CHANNEL_SPIN_DISPLAY_SIZE 100
 
+/* volume scale parameters */
+#define VOLUME_SCALE_MIN          1.0
+#define VOLUME_SCALE_INIT         VOLUME_SCALE_MIN
+#define VOLUME_SCALE_MAX          10.0
+#define VOLUME_SCALE_STEP         0.1
+#define VOLUME_SCALE_DISPLAY_SIZE 100
+
 #define SAMPLE_RATE 30000
 
 #define SAMPLE_RECV_HZ 20
@@ -76,6 +83,8 @@ static const pa_sample_spec ss = {
 
 static int quit_requested = 0;
 static int sonifying = 0;
+
+static gdouble digital_gain = VOLUME_SCALE_INIT;
 
 static void clicker(GtkWidget __attribute__((unused)) *widget,
                     gpointer data)
@@ -116,6 +125,12 @@ static void channelchanged(GtkWidget __attribute__((unused)) *widget,
   chip_channel = new_chip_channel;
 }
 
+static void volumechanged(GtkWidget __attribute__((unused)) *widget,
+                          GtkScale *scale)
+{
+  digital_gain = gtk_range_get_value((GtkRange *)scale);
+}
+
 static void destroy(GtkWidget __attribute__((unused)) *widget,
                     gpointer __attribute__((unused)) data)
 {
@@ -130,7 +145,9 @@ int main(int argc, char **argv)
   GtkWidget *channelspinner;
   GtkWidget *startbutton;
   GtkWidget *stopbutton;
+  GtkWidget *volumescale;
   GtkWidget *label;
+  GtkWidget *volumelabel;
   GtkAdjustment *adj;
   gchar **protoargv = (char *[]){argv[1], "-A", NULL};
   gint protostdout;
@@ -239,11 +256,37 @@ int main(int argc, char **argv)
                    G_CALLBACK(channelchanged),
                    channelspinner);
 
+  g_signal_connect (adj, "value_changed",
+                    G_CALLBACK (channelchanged),
+                    channelspinner);
+
+  volumelabel = gtk_label_new("Digital Gain:");
+  gtk_box_pack_start(GTK_BOX(main_vbox), volumelabel, FALSE, TRUE, 0);
+
+  volumescale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL,
+                                         VOLUME_SCALE_MIN,
+                                         VOLUME_SCALE_MAX,
+                                         VOLUME_SCALE_STEP);
+
+  gtk_widget_set_size_request(volumescale,
+                              VOLUME_SCALE_DISPLAY_SIZE,
+                              -1);
+
+  gtk_box_pack_start(GTK_BOX(main_vbox), volumescale, FALSE, TRUE, 0);
+
+  g_signal_connect(adj, "value_changed",
+                   G_CALLBACK(channelchanged),
+                   channelspinner);
+
   g_signal_connect(startbutton, "clicked",
                    G_CALLBACK(clicker), "start");
 
   g_signal_connect(stopbutton, "clicked",
                    G_CALLBACK(clicker), "stop");
+
+  g_signal_connect(volumescale, "value_changed",
+                   G_CALLBACK(volumechanged),
+                   volumescale);
 
   gtk_widget_show_all(window);
 
@@ -304,12 +347,24 @@ int main(int argc, char **argv)
             int num_samples = bytes / (CHANNELS_PER_CHIP * sizeof(uint16_t));
 
             for (j = 0; j < num_samples; j++) {
+              gdouble scaled_value;
+
               /*
                * assemble samples from the channel of interest on the chip,
-               * converting from unsigned to signed 16-bit representation.
+               * converting from unsigned to signed 16-bit representation,
+               * and scaling as specified by the digital volume slider.
                */
-              samples[j] = (int16_t) ((int) recvbuf[(j * CHANNELS_PER_CHIP) +
-                                                    chip_channel] - (1 << 15));
+              scaled_value = digital_gain *
+                ((int) recvbuf[(j * CHANNELS_PER_CHIP) +
+                               chip_channel] - (1 << 15));
+
+              if (scaled_value > (gdouble) INT16_MAX) {
+                samples[j] = INT16_MAX;
+              } else if (scaled_value < (gdouble) INT16_MIN) {
+                samples[j] = INT16_MIN;
+              } else {
+                samples[j] = (int16_t) scaled_value;
+              }
             }
             if (pa_simple_write(s, samples, sizeof(int16_t) * num_samples,
                                 &error) < 0) {
