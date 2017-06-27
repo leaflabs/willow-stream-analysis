@@ -82,6 +82,7 @@ class StreamWindow(QtGui.QWidget):
         # makes SEEKRIT SPEEDZ when opening fullscreen first time
         # this is mostly only helpful on crappy computers
         self.canvas_popout.native.showFullScreen()
+        self.poppedIn = True
 
         self.plotBuff = np.zeros((nchans, self.nsamps), dtype='float')
         self.plotBuff_raw = np.zeros((nchans, self.nsamps), dtype='float')
@@ -416,9 +417,21 @@ class StreamWindow(QtGui.QWidget):
 
     def popoutCanvas(self):
         self.canvas_popout.native.showFullScreen()
+        self.poppedIn = False
 
     def popinCanvas(self):
         self.canvas_popout.native.hide()
+        self.poppedIn = True
+
+    def keyReleaseEvent(self, event):
+        if not self.poppedIn and (event.key == QtCore.Qt.Key_F11 or
+            event.key == QtCore.Qt.Key_Escape):
+            self.popinCanvas()
+        elif self.poppedIn and event.key == QtCore.Qt.Key_F11:
+            self.popoutCanvas()
+        elif event.key == QtCore.Qt.Key_Space:
+            self.playPause()
+
 
     def onClose(self, event):
         self.canvas_popout.native.hide()
