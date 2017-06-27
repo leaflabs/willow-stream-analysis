@@ -289,7 +289,7 @@ class StreamWindow(QtGui.QWidget):
 
     def setInfoLabel(self, xr, yr):
         self.infoLabel.setText('Chip %d: xrange = %3.2f ms, yrange = %3.2f uV\n'
-                                '(shift+mousewheel zooms horizontally, ctrl+mousewheel zooms vertically)'
+                               'mousewheel to zoom x and y, ctrl+mousewheel to zoom x, shift+mousewheel to zoom y'
                                         % (self.chip, xr, yr))
     def setPlotLabel(self, chan):
         if self.probeMap != None:
@@ -777,7 +777,8 @@ class ChipCanvas(app.Canvas):
             self.scale_x, self.scale_y = (max(1, self.scale_x*np.exp(2.5*d)),
                                           max(1, self.scale_y*np.exp(0.0*d)))
         else:
-            return
+            self.scale_x, self.scale_y = (max(1, self.scale_x*np.exp(2.5*d)),
+                                          max(1, self.scale_y*np.exp(2.5*d)))
 
         # axes drawn too many times if we are scrolling more than one teeny bit
         # at a time, slowing down axis scaling when zooming. for now, just
