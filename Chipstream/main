@@ -253,7 +253,7 @@ class StreamWindow(QtGui.QWidget):
     def hwif_request(self, *args):
         """Write to stdout requests to Willow hardware; WillowGUI will execute
         these requests if it can. """
-        sys.stderr.write('hwif_req: ' + ', '.join(args))
+        sys.stderr.write('hwif_req: ' + ', '.join(args) + '\n')
 
     def startStreaming(self):
         self.hwif_request('startStreaming_subsamples')
