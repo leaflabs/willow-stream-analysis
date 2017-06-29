@@ -364,7 +364,7 @@ class StreamWindow(QtGui.QWidget):
             # (true of x86, amd64, but not of some other processors)
             new_data = struct.unpack('<'+'H'*nchans*self.nrefresh, new_data_string)
         except (struct.error, TypeError) as e:
-            sys.stderr.write('\n' + e + '\n')
+            sys.stderr.write('\n' + str(e) + '\n')
             sys.stderr.write('Read from proto2bytes failed!\n')
             self.stopStreaming()
             return
