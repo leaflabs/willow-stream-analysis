@@ -869,4 +869,4 @@ if __name__=='__main__':
         params = dlg.getParams()
         streamWindow = StreamWindow(params, proto2bytes_path)
         streamWindow.show()
-    app.exec_()
+    sys.exit(app.exec_())
