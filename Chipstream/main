@@ -8,6 +8,8 @@ import scipy.signal as signal
 import itertools, struct, warnings
 import pickle
 import h5py
+import fcntl
+import io
 
 from vispy import gloo, app, scene, visuals
 from vispy.visuals import transforms
@@ -25,6 +27,12 @@ MICROVOLTS_PER_COUNT = 0.195
 MIN_CHIP_NUMBER = 0
 MAX_CHIP_NUMBER = 31    # Willows can have at most chips 0 - 31 active at once.
 LABEL_HEIGHT = 60       # it looks fine for a line of text to be this tall
+
+# wait 10 seconds before giving up on receiving streaming data from proto2bytes
+# and asking GUI to pause streaming in hardware
+STREAM_GIVEUP_TIME_MS = 10000
+# wait 100 ms before giving up on a single proto2bytes poll
+POLL_TIME_MS = 100
 
 class StreamWindow(QtGui.QWidget):
 
@@ -88,14 +96,15 @@ class StreamWindow(QtGui.QWidget):
         self.plotBuff_raw = np.zeros((nchans, self.nsamps), dtype='float')
         self.newBuff = np.zeros((nchans, self.nrefresh), dtype='float')
         self.draw_point = 0
+        # nchans channels of 2-byte data, gathered over self.nrefresh samples
+        size_data = 2*nchans*self.nrefresh
+        self.new_data_ba = bytearray([0] * size_data)
+        self.new_data_mv = memoryview(self.new_data_ba)
 
 
         self.hwif_request('setSubsamples_byChip', str(self.chip))
 
-        self.timer = QtCore.QTimer()
-        self.timer.timeout.connect(self.updatePlot)
-
-        self.proto2bytes_filename = os.path.abspath(proto2bytes_filename)
+        self.p2b_filename = os.path.abspath(proto2bytes_filename)
 
         ###################
         # Top-level stuff
@@ -271,19 +280,64 @@ class StreamWindow(QtGui.QWidget):
         else:
             self.startStreaming()
 
+    def pollStream(self):
+        if not self.streaming:
+            return
+        if self.pollStream_bytes_so_far != len(self.new_data_ba):
+            pollout = self.p2b_poller.poll(POLL_TIME_MS)
+            if pollout:
+                self.pollStream_failed_polls = 0
+                [(_, events)] = pollout
+                # if proto2bytes failing to stream, give up
+                if select.POLLIN & events == select.POLLIN:
+                    rest_of_buff = self.new_data_mv[self.pollStream_bytes_so_far:]
+                    self.pollStream_bytes_so_far += self.p2b_stdoutio.readinto(rest_of_buff)
+                if select.POLLERR & events == select.POLLERR:
+                    sys.stderr.write("Chipstream's proto2bytes in error state!\n")
+                    self.stopStreaming()
+                if select.POLLHUP & events == select.POLLHUP:
+                    sys.stderr.write("Chipstream's proto2bytes hung up!\n")
+                    self.stopStreaming()
+                if self.pollStream_bytes_so_far == len(self.new_data_ba):
+                    # whole frame of data ready! let's draw it!
+                    self.updatePlot()
+                    self.pollStream_bytes_so_far = 0
+            else:
+                self.pollStream_failed_polls += 1
+                if self.pollStream_failed_polls * POLL_TIME_MS >= STREAM_GIVEUP_TIME_MS:
+                    sys.stderr.write("Chipstream's proto2bytes failed to give data for %d seconds! Killing it...\n" \
+                                     % STREAM_GIVEUP_TIME_MS / 1000.)
+                    self.stopStreaming()
+
+
     def toggleStdin(self, enable):
         if enable:
             print "spawning proto2bytes subprocess"
-            self.proto2bytes_po = subprocess.Popen([self.proto2bytes_filename,
-                '-A'], stdout=subprocess.PIPE,
+            self.p2b_po = subprocess.Popen([self.p2b_filename, '-A'],
+                stdout=subprocess.PIPE,
                 # comment this out to view stderr in terminal (kinda useful for debugging)
                 stderr=subprocess.PIPE
                 )
-            self.timer.start(self.frame_period)
+            # set proto2bytes' stdout as non-blocking
+            fl = fcntl.fcntl(self.p2b_po.stdout.fileno(), fcntl.F_GETFL)
+            fcntl.fcntl(self.p2b_po.stdout.fileno(), fcntl.F_SETFL, fl | os.O_NONBLOCK)
+            # poller for telling if reads are ready (POLLIN), proto2bytes has
+            # stopped (POLLHUP), or if it is having an error (POLLERR)
+            self.p2b_poller = select.poll()
+            self.p2b_poller.register(self.p2b_po.stdout,
+                    select.POLLIN | select.POLLERR | select.POLLHUP)
+            # FileIO created from stdout (used for readinto() calls when poling)
+            self.p2b_stdoutio = io.FileIO(self.p2b_po.stdout.fileno(), mode='r')
+            self.pollStream_bytes_so_far = 0
+            self.pollStream_failed_polls = 0
+            self.pollStreamTimer = QtCore.QTimer()
+            self.pollStreamTimer.timeout.connect(self.pollStream)
+            # poll whenever rest of QT events are not being serviced
+            self.pollStreamTimer.start(0)
         else:
-            self.timer.stop()
             try:
-                self.proto2bytes_po.kill()
+                self.p2b_po.kill()
+                self.pollStreamTimer.stop()
             except AttributeError:
                 pass
 
@@ -356,13 +410,10 @@ class StreamWindow(QtGui.QWidget):
 
 
     def updatePlot(self):
-        # nchans channels of 2-byte data, gathered over self.nrefresh samples
-        size_data = 2*nchans*self.nrefresh
-        new_data_string = self.proto2bytes_po.stdout.read(size_data)
         try:
             # assumes daemon running on a little-endian system
             # (true of x86, amd64, but not of some other processors)
-            new_data = struct.unpack('<'+'H'*nchans*self.nrefresh, new_data_string)
+            new_data = struct.unpack('<'+'H'*nchans*self.nrefresh, self.new_data_ba)
         except (struct.error, TypeError) as e:
             sys.stderr.write('\n' + str(e) + '\n')
             sys.stderr.write('Read from proto2bytes failed!\n')
