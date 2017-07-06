@@ -375,9 +375,10 @@ class StreamWindow(QtGui.QWidget):
 
     def changeChip(self):
         chip = int(self.chipNumberLine.text())
-        self.hwif_request('setSubsamples_byChip', str(chip))
-        self.draw_point = 0
-        self.initChip(chip)
+        if chip != self.chip:
+            self.hwif_request('setSubsamples_byChip', str(chip))
+            self.draw_point = 0
+            self.initChip(chip)
 
     def initChip(self, chip):
         self.chip = chip
