@@ -28,6 +28,8 @@ MIN_CHIP_NUMBER = 0
 MAX_CHIP_NUMBER = 31    # Willows can have at most chips 0 - 31 active at once.
 LABEL_HEIGHT = 60       # it looks fine for a line of text to be this tall
 
+CHANGE_CHIP_MS = 500    # Aggregate chip change events before informing WillowGUI
+
 # wait 10 seconds before giving up on receiving streaming data from proto2bytes
 # and asking GUI to pause streaming in hardware
 STREAM_GIVEUP_TIME_MS = 10000
@@ -228,6 +230,10 @@ class StreamWindow(QtGui.QWidget):
 
         self.canvas_popout.native.hide()
 
+        self.changeChipTimer = QtCore.QTimer()
+        self.changeChipTimer.timeout.connect(self.changeChip)
+        self.changeChipTimer.setSingleShot(True)
+
     def canvasesApply(self, function, *args, **kwargs):
         embedded_args = (self.canvas_embedded,) + args
         function(*embedded_args, **kwargs)
@@ -364,14 +370,22 @@ class StreamWindow(QtGui.QWidget):
             return 1, 1
 
     def incrementChip(self):
-        chip = min(self.chip + 1, MAX_CHIP_NUMBER)
+        chip = min (int(self.chipNumberLine.text()) + 1, MAX_CHIP_NUMBER)
         self.chipNumberLine.setText(str(chip))
-        self.changeChip()
+        # if not currently aggregating changes, instantiate immediately
+        if not self.changeChipTimer.isActive():
+            self.changeChip()
+        # arm or rearm the aggregation timer
+        self.changeChipTimer.start(CHANGE_CHIP_MS)
 
     def decrementChip(self):
-        chip = max(self.chip - 1, MIN_CHIP_NUMBER)
+        chip = max(int(self.chipNumberLine.text()) - 1, MIN_CHIP_NUMBER)
         self.chipNumberLine.setText(str(chip))
-        self.changeChip()
+        # if not currently aggregating changes, instantiate immediately
+        if not self.changeChipTimer.isActive():
+            self.changeChip()
+        # arm or rearm the aggregation timer
+        self.changeChipTimer.start(CHANGE_CHIP_MS)
 
     def changeChip(self):
         chip = int(self.chipNumberLine.text())
