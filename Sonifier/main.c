@@ -424,6 +424,8 @@ int main(int argc, char **argv)
     }
   }
 
+  stop_sonifying();
+
   if (pa_simple_drain(s, &error) < 0) {
     g_print(__FILE__
             ": pa_simple_drain() failed: %s\n",
