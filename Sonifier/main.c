@@ -86,20 +86,30 @@ static int sonifying = 0;
 
 static gdouble digital_gain = VOLUME_SCALE_INIT;
 
+static void start_sonifying(void)
+{
+  if (!sonifying) {
+    fprintf(stderr, "hwif_req: startStreaming_subsamples\n");
+    sonifying = 1;
+  }
+}
+
+static void stop_sonifying(void)
+{
+  if (sonifying) {
+    sonifying = 0;
+    fprintf(stderr, "hwif_req: stopStreaming\n");
+  }
+}
+
 static void clicker(GtkWidget __attribute__((unused)) *widget,
                     gpointer data)
 {
   if (!strcmp((const char *) data, "start")) {
-    if (!sonifying) {
-      fprintf(stderr, "hwif_req: startStreaming_subsamples\n");
-      sonifying = 1;
-    }
+    start_sonifying();
   }
   else if (!strcmp((const char *) data, "stop")) {
-    if (sonifying) {
-      sonifying = 0;
-      fprintf(stderr, "hwif_req: stopStreaming\n");
-    }
+    stop_sonifying();
   }
 }
 
