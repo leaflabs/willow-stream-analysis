@@ -267,12 +267,37 @@ class StreamWindow(QtGui.QWidget):
     def startStreaming(self):
         self.hwif_request('startStreaming_subsamples')
         self.streaming = True
-        self.toggleStdin(True)
+        print "spawning proto2bytes subprocess"
+        self.p2b_po = subprocess.Popen([self.p2b_filename, '-A'],
+            stdout=subprocess.PIPE,
+            # comment this out to view stderr in terminal (kinda useful for debugging)
+            stderr=subprocess.PIPE
+            )
+        # set proto2bytes' stdout as non-blocking
+        fl = fcntl.fcntl(self.p2b_po.stdout.fileno(), fcntl.F_GETFL)
+        fcntl.fcntl(self.p2b_po.stdout.fileno(), fcntl.F_SETFL, fl | os.O_NONBLOCK)
+        # poller for telling if reads are ready (POLLIN), proto2bytes has
+        # stopped (POLLHUP), or if it is having an error (POLLERR)
+        self.p2b_poller = select.poll()
+        self.p2b_poller.register(self.p2b_po.stdout,
+                select.POLLIN | select.POLLERR | select.POLLHUP)
+        # FileIO created from stdout (used for readinto() calls when poling)
+        self.p2b_stdoutio = io.FileIO(self.p2b_po.stdout.fileno(), mode='r')
+        self.pollStream_bytes_so_far = 0
+        self.pollStream_failed_polls = 0
+        self.pollStreamTimer = QtCore.QTimer()
+        self.pollStreamTimer.timeout.connect(self.pollStream)
+        # poll whenever rest of QT events are not being serviced
+        self.pollStreamTimer.start(0)
 
     def stopStreaming(self):
         self.hwif_request('stopStreaming')
         self.streaming = False
-        self.toggleStdin(False)
+        try:
+            self.p2b_po.kill()
+            self.pollStreamTimer.stop()
+        except AttributeError:
+            pass
 
     def playPause(self):
         if self.streaming:
@@ -308,38 +333,6 @@ class StreamWindow(QtGui.QWidget):
                     sys.stderr.write("Chipstream's proto2bytes failed to give data for %d seconds! Killing it...\n" \
                                      % STREAM_GIVEUP_TIME_MS / 1000.)
                     self.stopStreaming()
-
-
-    def toggleStdin(self, enable):
-        if enable:
-            print "spawning proto2bytes subprocess"
-            self.p2b_po = subprocess.Popen([self.p2b_filename, '-A'],
-                stdout=subprocess.PIPE,
-                # comment this out to view stderr in terminal (kinda useful for debugging)
-                stderr=subprocess.PIPE
-                )
-            # set proto2bytes' stdout as non-blocking
-            fl = fcntl.fcntl(self.p2b_po.stdout.fileno(), fcntl.F_GETFL)
-            fcntl.fcntl(self.p2b_po.stdout.fileno(), fcntl.F_SETFL, fl | os.O_NONBLOCK)
-            # poller for telling if reads are ready (POLLIN), proto2bytes has
-            # stopped (POLLHUP), or if it is having an error (POLLERR)
-            self.p2b_poller = select.poll()
-            self.p2b_poller.register(self.p2b_po.stdout,
-                    select.POLLIN | select.POLLERR | select.POLLHUP)
-            # FileIO created from stdout (used for readinto() calls when poling)
-            self.p2b_stdoutio = io.FileIO(self.p2b_po.stdout.fileno(), mode='r')
-            self.pollStream_bytes_so_far = 0
-            self.pollStream_failed_polls = 0
-            self.pollStreamTimer = QtCore.QTimer()
-            self.pollStreamTimer.timeout.connect(self.pollStream)
-            # poll whenever rest of QT events are not being serviced
-            self.pollStreamTimer.start(0)
-        else:
-            try:
-                self.p2b_po.kill()
-                self.pollStreamTimer.stop()
-            except AttributeError:
-                pass
 
     def setInfoLabel(self, xr, yr):
         self.infoLabel.setText('Chip %d: xrange = %3.2f ms, yrange = %3.2f uV\n'
