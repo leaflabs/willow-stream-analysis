@@ -328,28 +328,30 @@ int main(int argc, char **argv)
     num_fds = g_poll(&gpollfd[0], 1, 1000/SAMPLE_RECV_HZ);
 
     if (num_fds > 0) {
+      gint outfd = gpollfd[0].fd;
+
       if (gpollfd[0].revents & G_IO_HUP) {
           g_print(__FILE__
                   ": Received HUP on subprocess stdout %d, exiting\n",
-                  protostdout);
+                  outfd);
           goto done;
       } else if (gpollfd[0].revents & G_IO_ERR) {
           g_print(__FILE__
                   ": Received ERR on subprocess stdout %d, exiting\n",
-                  protostdout);
+                  outfd);
           goto done;
       } else if (gpollfd[0].revents & G_IO_IN) {
-        bytes = read(protostdout, recvbuf, sizeof(recvbuf));
+        bytes = read(outfd, recvbuf, sizeof(recvbuf));
 
         if (bytes < 0) {
           g_print(__FILE__
                   ": read error on subprocess stdout %d: \"%s\"\n",
-                  protostdout, strerror(errno));
+                  outfd, strerror(errno));
           continue;
         } else if (bytes < (ssize_t)(CHANNELS_PER_CHIP * sizeof(uint16_t))) {
           g_print(__FILE__
                   ": short read of %ld bytes from subprocess stdout %d\n",
-                  bytes, protostdout);
+                  bytes, outfd);
           continue;
         } else {
           if (sonifying) {
@@ -388,7 +390,7 @@ int main(int argc, char **argv)
       } else {
         g_print(__FILE__
                 ": Unknown event %d on subprocess stdout %d, exiting\n",
-                gpollfd[0].revents, protostdout);;
+                gpollfd[0].revents, outfd);
         goto done;
       }
     }
