@@ -22,13 +22,16 @@
  * output stops.
  */
 
+#define _POSIX_SOURCE
 #include <gtk/gtk.h>
 #include <glib.h>
 #include <glib-unix.h>
+#include <glib/gstdio.h>
 #include <pulse/simple.h>
 #include <pulse/error.h>
 #include <pulse/gccmacro.h>
 #include <sys/time.h>
+#include <signal.h>
 #include <sys/types.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -86,10 +89,67 @@ static int sonifying = 0;
 
 static gdouble digital_gain = VOLUME_SCALE_INIT;
 
+static GPollFD gpollfd[1];
+static gchar *protoargv[3];
+
+static GPid subprocess_pid;
+
 static void start_sonifying(void)
 {
+  GError *err = NULL;
+  gint protostdout;
+
   if (!sonifying) {
     fprintf(stderr, "hwif_req: startStreaming_subsamples\n");
+    if (g_spawn_async_with_pipes(NULL,
+                                 protoargv,
+                                 NULL,
+                                 G_SPAWN_DEFAULT,
+                                 NULL,
+                                 NULL,
+                                 &subprocess_pid,
+                                 NULL,
+                                 &protostdout,
+                                 NULL,
+                                 &err) == FALSE) {
+      g_print(__FILE__
+              ": failed to spawn \"%s %s\"\n",
+              protoargv[0], protoargv[1]);
+      if (err) {
+        g_print(__FILE__
+                ": glib error: %s\n",
+                err->message);
+        g_error_free(err);
+      }
+      exit(1);
+    }
+
+    if (g_unix_set_fd_nonblocking(protostdout, TRUE, &err) == FALSE) {
+      g_print(__FILE__
+              ": failed to set subprocess stdout %d nonblocking\n",
+              protostdout);
+      if (err) {
+        g_print(__FILE__
+                ": glib error: %s\n",
+                err->message);
+        g_error_free(err);
+      }
+
+      if (g_close(protostdout, &err) == FALSE) {
+        g_print(__FILE__
+                ": failed to close subprocess stdout %d\n",
+                protostdout);
+        if (err) {
+          g_print(__FILE__
+                  ": glib error: %s\n",
+                  err->message);
+          g_error_free(err);
+        }
+      }
+      exit(1);
+    }
+
+    gpollfd[0].fd = protostdout;
     sonifying = 1;
   }
 }
@@ -99,6 +159,8 @@ static void stop_sonifying(void)
   if (sonifying) {
     sonifying = 0;
     fprintf(stderr, "hwif_req: stopStreaming\n");
+    kill(subprocess_pid, SIGKILL);
+    g_spawn_close_pid(subprocess_pid);
   }
 }
 
@@ -159,15 +221,9 @@ int main(int argc, char **argv)
   GtkWidget *label;
   GtkWidget *volumelabel;
   GtkAdjustment *adj;
-  gchar **protoargv = (char *[]){argv[1], "-A", NULL};
-  gint protostdout;
-  GError *err = NULL;
-
   pa_simple *s = NULL;
   int error;
   int ret = 1;
-
-  GPollFD gpollfd[1];
 
   if (argc != 2) {
     /*
@@ -180,28 +236,10 @@ int main(int argc, char **argv)
     exit(1);
   }
 
-  if (g_spawn_async_with_pipes(NULL,
-                               protoargv,
-                               NULL,
-                               G_SPAWN_DEFAULT,
-                               NULL,
-                               NULL,
-                               NULL,
-                               NULL,
-                               &protostdout,
-                               NULL,
-                               &err) == FALSE) {
-    g_print(__FILE__
-            ": failed to spawn \"%s %s\"\n",
-            protoargv[0], protoargv[1]);
-    if (err) {
-      g_print(__FILE__
-              ": glib error: %s\n",
-              err->message);
-      g_error_free(err);
-    }
-    exit(1);
-  }
+
+  protoargv[0] = argv[1];
+  protoargv[1] = "-A";
+  protoargv[2] = NULL;
 
   if (!(s = pa_simple_new(NULL, "Sonifier", PA_STREAM_PLAYBACK,
                           NULL, "Activity", &ss, NULL, NULL,
@@ -300,21 +338,8 @@ int main(int argc, char **argv)
 
   gtk_widget_show_all(window);
 
-  gpollfd[0].fd = protostdout;
-  gpollfd[0].events = G_IO_IN | G_IO_HUP | G_IO_ERROR;
 
-  if (g_unix_set_fd_nonblocking(protostdout, TRUE, &err) == FALSE) {
-    g_print(__FILE__
-            ": failed to set subprocess stdout %d nonblocking\n",
-            protostdout);
-    if (err) {
-      g_print(__FILE__
-              ": glib error: %s\n",
-              err->message);
-      g_error_free(err);
-    }
-    goto done;
-  }
+  gpollfd[0].events = G_IO_IN | G_IO_HUP | G_IO_ERROR;
 
   while (!quit_requested) {
     int num_fds = 0;
@@ -325,21 +350,26 @@ int main(int argc, char **argv)
     }
 
     gpollfd[0].revents = 0;
-    num_fds = g_poll(&gpollfd[0], 1, 1000/SAMPLE_RECV_HZ);
+
+    /*
+     * while sonifying, poll the subprocess's stdout; otherwise specify
+     * zero fds to use g_poll as a synchronous timer to limit churn.
+     */
+    num_fds = g_poll(&gpollfd[0], sonifying? 1 : 0, 1000/SAMPLE_RECV_HZ);
 
     if (num_fds > 0) {
       gint outfd = gpollfd[0].fd;
 
       if (gpollfd[0].revents & G_IO_HUP) {
-          g_print(__FILE__
-                  ": Received HUP on subprocess stdout %d, exiting\n",
-                  outfd);
-          goto done;
+        g_print(__FILE__
+                ": Received HUP on subprocess stdout %d\n",
+                outfd);
+        stop_sonifying();
       } else if (gpollfd[0].revents & G_IO_ERR) {
-          g_print(__FILE__
-                  ": Received ERR on subprocess stdout %d, exiting\n",
-                  outfd);
-          goto done;
+        g_print(__FILE__
+                ": Received ERR on subprocess stdout %d\n",
+                outfd);;
+        stop_sonifying();
       } else if (gpollfd[0].revents & G_IO_IN) {
         bytes = read(outfd, recvbuf, sizeof(recvbuf));
 
@@ -354,37 +384,35 @@ int main(int argc, char **argv)
                   bytes, outfd);
           continue;
         } else {
-          if (sonifying) {
-            int j;
-            int num_samples = bytes / (CHANNELS_PER_CHIP * sizeof(uint16_t));
+          int j;
+          int num_samples = bytes / (CHANNELS_PER_CHIP * sizeof(uint16_t));
 
-            for (j = 0; j < num_samples; j++) {
-              gdouble scaled_value;
+          for (j = 0; j < num_samples; j++) {
+            gdouble scaled_value;
 
-              /*
-               * assemble samples from the channel of interest on the chip,
-               * converting from unsigned to signed 16-bit representation,
-               * and scaling as specified by the digital volume slider.
-               */
-              scaled_value = digital_gain *
-                ((int) recvbuf[(j * CHANNELS_PER_CHIP) +
-                               chip_channel] - (1 << 15));
+            /*
+             * assemble samples from the channel of interest on the chip,
+             * converting from unsigned to signed 16-bit representation,
+             * and scaling as specified by the digital volume slider.
+             */
+            scaled_value = digital_gain *
+              ((int) recvbuf[(j * CHANNELS_PER_CHIP) +
+                             chip_channel] - (1 << 15));
 
-              if (scaled_value > (gdouble) INT16_MAX) {
-                samples[j] = INT16_MAX;
-              } else if (scaled_value < (gdouble) INT16_MIN) {
-                samples[j] = INT16_MIN;
-              } else {
-                samples[j] = (int16_t) scaled_value;
-              }
+            if (scaled_value > (gdouble) INT16_MAX) {
+              samples[j] = INT16_MAX;
+            } else if (scaled_value < (gdouble) INT16_MIN) {
+              samples[j] = INT16_MIN;
+            } else {
+              samples[j] = (int16_t) scaled_value;
             }
-            if (pa_simple_write(s, samples, sizeof(int16_t) * num_samples,
-                                &error) < 0) {
-              g_print(__FILE__
-                      ": pa_simple_write() failed: %s\n",
-                      pa_strerror(error));
-              goto done;
-            }
+          }
+          if (pa_simple_write(s, samples, sizeof(int16_t) * num_samples,
+                              &error) < 0) {
+            g_print(__FILE__
+                    ": pa_simple_write() failed: %s\n",
+                    pa_strerror(error));
+            goto done;
           }
         }
       } else {
